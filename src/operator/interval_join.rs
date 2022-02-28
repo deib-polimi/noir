@@ -164,6 +164,7 @@ where
                 StreamElement::Item(_) => panic!("Interval Join only supports timestamped streams"),
                 StreamElement::FlushBatch => return StreamElement::FlushBatch,
                 StreamElement::Terminate => return StreamElement::Terminate,
+                StreamElement::Yield => return StreamElement::Yield, //TODO: Check
             }
 
             self.advance();

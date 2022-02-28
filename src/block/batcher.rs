@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use coarsetime::Instant;
 
+use crate::channel::TrySendError;
 use crate::network::{Coord, NetworkMessage, NetworkSender};
 use crate::operator::{ExchangeData, StreamElement};
 
@@ -25,6 +26,11 @@ pub enum BatchMode {
     Single,
 }
 
+pub enum TryFlushError {
+    Full,
+    Disconnected,
+}
+
 /// A `Batcher` wraps a sender and sends the messages in batches to reduce the network overhead.
 ///
 /// Internally it spawns a new task to handle the timeouts and join it at the end.
@@ -39,6 +45,8 @@ pub(crate) struct Batcher<Out: ExchangeData> {
     last_send: Instant,
     /// The coordinate of this block, used for marking the sender of the batch.
     coord: Coord,
+
+    pending_msg: Option<NetworkMessage<Out>>,
 }
 
 impl<Out: ExchangeData> Batcher<Out> {
@@ -49,40 +57,70 @@ impl<Out: ExchangeData> Batcher<Out> {
             buffer: Default::default(),
             last_send: Instant::now(),
             coord,
+            pending_msg: None,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn try_send(&mut self, msg: NetworkMessage<Out>) -> Result<(), TryFlushError> {
+        assert!(self.pending_msg.is_none());
+        match self.remote_sender.try_send(msg) {
+            Ok(()) => {
+                self.last_send = Instant::now();
+                Ok(())
+            }
+            Err(TrySendError::Disconnected(msg)) => {
+                self.pending_msg = Some(msg);
+                Err(TryFlushError::Disconnected)
+            }
+            Err(TrySendError::Full(msg)) => {
+                self.pending_msg = Some(msg);
+                Err(TryFlushError::Full)
+            }
         }
     }
 
     /// Put a message in the batch queue, it won't be sent immediately.
-    pub(crate) fn enqueue(&mut self, message: StreamElement<Out>) {
+    pub(crate) fn enqueue(&mut self, message: StreamElement<Out>) -> Result<(), TryFlushError> {
         match self.mode {
             BatchMode::Adaptive(n, max_delay) => {
                 self.buffer.push(message);
                 let timeout_elapsed = self.last_send.elapsed() > max_delay.into();
                 if self.buffer.len() >= n.get() || timeout_elapsed {
                     self.flush()
+                } else {
+                    Ok(())
                 }
             }
             BatchMode::Fixed(n) => {
                 self.buffer.push(message);
                 if self.buffer.len() >= n.get() {
                     self.flush()
+                } else {
+                    Ok(())
                 }
             }
             BatchMode::Single => {
                 let message = NetworkMessage::new_single(message, self.coord);
-                self.remote_sender.send(message).unwrap();
+                self.try_send(message)
             }
         }
     }
 
     /// Flush the internal buffer if it's not empty.
-    pub(crate) fn flush(&mut self) {
+    pub(crate) fn flush(&mut self) -> Result<(), TryFlushError> {
+        // log::warn!("Requesting flush. pending: {}\tbuf: {}", self.pending_msg.is_some(), self.buffer.len());
+        if let Some(msg) = self.pending_msg.take() {
+            self.try_send(msg)?;
+        }
+
         if !self.buffer.is_empty() {
             let mut batch = Vec::with_capacity(self.buffer.capacity());
             std::mem::swap(&mut self.buffer, &mut batch);
             let message = NetworkMessage::new_batch(batch, self.coord);
-            self.remote_sender.send(message).unwrap();
-            self.last_send = Instant::now();
+            self.try_send(message)
+        } else {
+            Ok(())
         }
     }
 

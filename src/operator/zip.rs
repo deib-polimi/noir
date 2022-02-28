@@ -82,6 +82,7 @@ impl<Out1: ExchangeData, Out2: ExchangeData> Operator<(Out1, Out2)> for Zip<Out1
                 StreamElement::FlushBatch | StreamElement::Terminate => {
                     return item.map(|_| unreachable!())
                 }
+                StreamElement::Yield => return StreamElement::Yield, //TODO: Check
             }
         }
         let item1 = self.stash1.pop_front().unwrap();

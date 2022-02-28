@@ -374,7 +374,8 @@ where
                 StreamElement::Item(_)
                 | StreamElement::Timestamped(_, _)
                 | StreamElement::Watermark(_)
-                | StreamElement::FlushBatch => item,
+                | StreamElement::FlushBatch
+                | StreamElement::Yield => item,
                 StreamElement::Terminate => {
                     debug!("Iterate at {} is terminating", self.coord);
                     let message = NetworkMessage::new_single(StreamElement::Terminate, self.coord);

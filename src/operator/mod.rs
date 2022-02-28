@@ -110,6 +110,8 @@ pub enum StreamElement<Out> {
     /// mark the end of an iteration. Therefore an operator may be prepared to received new data
     /// after this message, but should not retain the internal state.
     FlushAndRestart,
+
+    Yield,
 }
 
 /// An operator represents a unit of computation. It's always included inside a chain of operators,
@@ -149,6 +151,7 @@ impl<Out: Data> StreamElement<Out> {
             StreamElement::Terminate => StreamElement::Terminate,
             StreamElement::FlushAndRestart => StreamElement::FlushAndRestart,
             StreamElement::FlushBatch => StreamElement::FlushBatch,
+            StreamElement::Yield => StreamElement::Yield,
         }
     }
 
@@ -161,6 +164,7 @@ impl<Out: Data> StreamElement<Out> {
             StreamElement::Terminate => StreamElement::Terminate,
             StreamElement::FlushAndRestart => StreamElement::FlushAndRestart,
             StreamElement::FlushBatch => StreamElement::FlushBatch,
+            StreamElement::Yield => StreamElement::Yield,
         }
     }
 
@@ -173,6 +177,7 @@ impl<Out: Data> StreamElement<Out> {
             StreamElement::FlushBatch => "FlushBatch",
             StreamElement::Terminate => "Terminate",
             StreamElement::FlushAndRestart => "FlushAndRestart",
+            StreamElement::Yield => "Yield",
         }
     }
 }

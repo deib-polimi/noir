@@ -6,7 +6,7 @@ pub(crate) use multiple::*;
 pub(crate) use single::*;
 
 use crate::block::BlockStructure;
-use crate::channel::RecvTimeoutError;
+use crate::channel::{RecvTimeoutError, TryRecvError};
 use crate::network::{Coord, NetworkDataIterator, NetworkMessage};
 use crate::operator::iteration::IterationStateLock;
 use crate::operator::source::Source;
@@ -39,6 +39,9 @@ pub(crate) trait StartBlockReceiver<Out>: Clone {
 
     /// Receive a batch from the previous blocks waiting indefinitely.
     fn recv(&mut self) -> NetworkMessage<Out>;
+
+    /// Try receiving a batch without blocking.
+    fn try_recv(&mut self) -> Result<NetworkMessage<Out>, TryRecvError>;
 
     /// Like `Operator::structure`.
     fn structure(&self) -> BlockStructure;
@@ -198,7 +201,7 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> Operator<Out>
             return StreamElement::FlushAndRestart;
         }
 
-        let max_delay = metadata.batch_mode.max_delay();
+        // let max_delay = metadata.batch_mode.max_delay();
 
         if let Some((sender, ref mut inner)) = self.batch_iter {
             let msg = match inner.next() {
@@ -246,31 +249,21 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> Operator<Out>
             return msg;
         }
 
-        // Receive next batch
-        let net_msg = match (self.already_timed_out, max_delay) {
-            // check the timeout only if there is one and the last time we didn't timed out
-            (false, Some(max_delay)) => {
-                match self.receiver.recv_timeout(max_delay) {
-                    Ok(net_msg) => net_msg,
-                    Err(_) => {
-                        // timed out: tell the block to flush the current batch
-                        // next time we wait indefinitely without the timeout since the batch is
-                        // currently empty
-                        self.already_timed_out = true;
-                        // this is a fake batch, and its sender is meaningless and will be
-                        // forget immediately
-                        NetworkMessage::new_single(StreamElement::FlushBatch, Default::default())
-                    }
+        let mut cnt = 0;
+        loop {
+            match self.receiver.try_recv() {
+                Ok(net_msg) => {
+                    self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
+                    return self.next();
                 }
+                Err(TryRecvError::Empty) if cnt < 8 => cnt += 1, // TODO: park
+                Err(TryRecvError::Empty) => {
+                    log::debug!("Empty input, yielding {}", self.metadata.as_ref().unwrap().coord);
+                    return StreamElement::Yield
+                }, // TODO: park
+                Err(TryRecvError::Disconnected) => unimplemented!(),
             }
-            _ => {
-                self.already_timed_out = false;
-                self.receiver.recv()
-            }
-        };
-
-        self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
-        self.next()
+        }
     }
 
     fn to_string(&self) -> String {

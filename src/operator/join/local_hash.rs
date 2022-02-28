@@ -246,6 +246,7 @@ impl<
                 StreamElement::Watermark(_) | StreamElement::Timestamped(_, _) => {
                     panic!("Cannot yet join timestamped streams")
                 }
+                StreamElement::Yield => return StreamElement::Yield, //TODO: Check
             }
         }
 

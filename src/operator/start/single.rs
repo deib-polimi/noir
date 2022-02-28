@@ -66,6 +66,11 @@ impl<Out: ExchangeData> StartBlockReceiver<Out> for SingleStartBlockReceiver<Out
         receiver.recv().expect("Network receiver failed")
     }
 
+    fn try_recv(&mut self) -> Result<NetworkMessage<Out>, super::TryRecvError> {
+        let receiver = self.receiver.as_mut().unwrap();
+        receiver.try_recv()
+    }
+
     fn structure(&self) -> BlockStructure {
         let mut operator = OperatorStructure::new::<Out, _>("StartBlock");
         operator

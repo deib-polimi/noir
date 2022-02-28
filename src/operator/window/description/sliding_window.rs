@@ -146,6 +146,7 @@ impl<Key: DataKey, Out: Data> WindowGenerator<Key, Out> for SlidingWindowGenerat
             }
             StreamElement::FlushBatch => unreachable!("Windows do not handle FlushBatch"),
             StreamElement::Terminate => unreachable!("Windows do not handle Terminate"),
+            StreamElement::Yield => unreachable!("Windows do not handle Yield"),
         }
     }
 

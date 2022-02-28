@@ -11,11 +11,13 @@ use anyhow::{anyhow, Result};
 use crossbeam_channel::{
     bounded, select, unbounded, Receiver, RecvError as ExtRecvError,
     RecvTimeoutError as ExtRecvTimeoutError, Select, Sender, TryRecvError as ExtTryRecvError,
+    TrySendError as ExtTrySendError,
 };
 #[cfg(all(not(feature = "crossbeam"), feature = "flume"))]
 use flume::{
     bounded, unbounded, Receiver, RecvError as ExtRecvError,
     RecvTimeoutError as ExtRecvTimeoutError, Sender, TryRecvError as ExtTryRecvError,
+    TrySendError as ExtTrySendError,
 };
 
 pub trait ChannelItem: Send + 'static {}
@@ -24,6 +26,7 @@ impl<T: Send + 'static> ChannelItem for T {}
 pub type RecvError = ExtRecvError;
 pub type RecvTimeoutError = ExtRecvTimeoutError;
 pub type TryRecvError = ExtTryRecvError;
+pub type TrySendError<T> = ExtTrySendError<T>;
 
 /// An _either_ type with the result of a select on 2 channels.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -94,6 +97,11 @@ impl<T: ChannelItem> BoundedChannelSender<T> {
         self.0
             .send(item)
             .map_err(|_| anyhow!("Error while sending"))
+    }
+
+    #[inline]
+    pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>> {
+        self.0.try_send(item)
     }
 }
 

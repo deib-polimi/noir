@@ -83,6 +83,7 @@ where
                 StreamElement::FlushBatch => return StreamElement::FlushBatch,
                 StreamElement::Terminate => return StreamElement::Terminate,
                 StreamElement::FlushAndRestart => return StreamElement::FlushAndRestart,
+                StreamElement::Yield => return StreamElement::Yield, //TODO: Check
             }
         }
     }
@@ -253,6 +254,7 @@ where
                 StreamElement::FlushBatch => return StreamElement::FlushBatch,
                 StreamElement::Terminate => return StreamElement::Terminate,
                 StreamElement::FlushAndRestart => return StreamElement::FlushAndRestart,
+                StreamElement::Yield => return StreamElement::Yield, //TODO: Check
             }
         }
     }

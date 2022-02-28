@@ -6,6 +6,7 @@ use crate::stream::{KeyValue, KeyedStream, Stream};
 
 #[cfg(feature = "crossbeam")]
 use crossbeam_channel::{unbounded, Receiver, Sender};
+use flume::TrySendError;
 #[cfg(not(feature = "crossbeam"))]
 use flume::{unbounded, Receiver, Sender};
 
@@ -15,6 +16,8 @@ where
     PreviousOperators: Operator<Out>,
 {
     prev: PreviousOperators,
+    metadata: Option<ExecutionMetadata>,
+    pending_item: Option<Out>,
     tx: Option<Sender<Out>>,
 }
 
@@ -24,14 +27,36 @@ where
     PreviousOperators: Operator<Out>,
 {
     fn setup(&mut self, metadata: ExecutionMetadata) {
+        self.metadata = Some(metadata.clone());
         self.prev.setup(metadata);
     }
 
     fn next(&mut self) -> StreamElement<()> {
+        if let Some(item) = self.pending_item.take() {
+            let tx = self.tx.as_ref().unwrap();
+            match tx.try_send(item) {
+                Ok(()) => {}
+                Err(TrySendError::Full(t)) => {
+                    log::debug!("Output channel full, yeielding {}", self.metadata.as_ref().unwrap().coord);
+                    self.pending_item = Some(t);
+                    return StreamElement::Yield;
+                }
+                Err(TrySendError::Disconnected(_)) => panic!(),
+            }
+        }
+
         match self.prev.next() {
             StreamElement::Item(t) | StreamElement::Timestamped(t, _) => {
-                let _ = self.tx.as_ref().map(|tx| tx.send(t));
-                StreamElement::Item(())
+                let tx = self.tx.as_ref().unwrap();
+                match tx.try_send(t) {
+                    Ok(()) => StreamElement::Item(()),
+                    Err(TrySendError::Full(t)) => {
+                        log::debug!("Output channel full, yeielding {}", self.metadata.as_ref().unwrap().coord);
+                        self.pending_item = Some(t);
+                        StreamElement::Yield
+                    }
+                    Err(TrySendError::Disconnected(_)) => panic!(),
+                }
             }
             StreamElement::Watermark(w) => StreamElement::Watermark(w),
             StreamElement::Terminate => {
@@ -40,6 +65,7 @@ where
             }
             StreamElement::FlushBatch => StreamElement::FlushBatch,
             StreamElement::FlushAndRestart => StreamElement::FlushAndRestart,
+            StreamElement::Yield => StreamElement::Yield, //TODO: Check
         }
     }
 
@@ -100,7 +126,12 @@ where
     pub fn collect_channel(self) -> Receiver<Out> {
         let (tx, rx) = unbounded();
         self.max_parallelism(1)
-            .add_operator(|prev| CollectChannelSink { prev, tx: Some(tx) })
+            .add_operator(|prev| CollectChannelSink {
+                prev,
+                tx: Some(tx),
+                metadata: None,
+                pending_item: None,
+            })
             .finalize_block();
         rx
     }

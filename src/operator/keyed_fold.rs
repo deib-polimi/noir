@@ -101,6 +101,7 @@ where
                 }
                 // this block won't sent anything until the stream ends
                 StreamElement::FlushBatch => {}
+                StreamElement::Yield => return StreamElement::Yield, //TODO: Check
             }
         }
 

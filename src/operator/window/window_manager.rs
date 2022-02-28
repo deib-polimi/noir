@@ -121,6 +121,7 @@ impl<Key: DataKey, Out: Data, WindowDescr: WindowDescription<Key, Out>>
             StreamElement::Terminate => {
                 unreachable!("KeyedWindowManager does not handle Terminate")
             }
+            StreamElement::Yield => unreachable!("Windows do not handle Yield"),
         }
     }
 

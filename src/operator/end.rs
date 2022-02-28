@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::block::{
     BatchMode, Batcher, BlockStructure, Connection, NextStrategy, OperatorStructure, SenderList,
+    TryFlushError,
 };
 use crate::network::ReceiverEndpoint;
 use crate::operator::{ExchangeData, KeyerFn, Operator, StreamElement};
@@ -24,6 +25,7 @@ where
     senders: HashMap<ReceiverEndpoint, Batcher<Out>, ahash::RandomState>,
     feedback_id: Option<BlockId>,
     ignore_block_ids: Vec<BlockId>,
+    must_flush: bool,
 }
 
 impl<Out: ExchangeData, OperatorChain, IndexFn> EndBlock<Out, OperatorChain, IndexFn>
@@ -45,6 +47,7 @@ where
             senders: Default::default(),
             feedback_id: None,
             ignore_block_ids: Default::default(),
+            must_flush: false,
         }
     }
 
@@ -58,6 +61,16 @@ where
 
     pub(crate) fn ignore_destination(&mut self, block_id: BlockId) {
         self.ignore_block_ids.push(block_id);
+    }
+
+    pub(crate) fn flush_all(&mut self) -> Result<(), TryFlushError> {
+        for (_, sender) in self.senders.iter_mut() {
+            match sender.flush() {
+                Ok(_) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -88,12 +101,26 @@ where
     }
 
     fn next(&mut self) -> StreamElement<()> {
+        if self.must_flush {
+            match self.flush_all() {
+                Ok(()) => self.must_flush = false,
+                Err(e) => {
+                    log::debug!("Must and could not flush, yielding {}", self.metadata.as_ref().unwrap().coord);
+                    return StreamElement::Yield;
+                }
+            }
+            return self.next();
+        }
+
         let message = self.prev.next();
         let to_return = message.take();
         match &message {
             StreamElement::Watermark(_)
             | StreamElement::Terminate
             | StreamElement::FlushAndRestart => {
+                if matches!(message, StreamElement::FlushAndRestart) {
+                    self.must_flush = true;
+                }
                 for senders in self.sender_groups.iter() {
                     for &sender in senders.0.iter() {
                         // if this block is the end of the feedback loop it should not forward
@@ -105,10 +132,10 @@ where
                             continue;
                         }
                         let sender = self.senders.get_mut(&sender).unwrap();
-                        sender.enqueue(message.clone());
-                        // make sure to flush at the end of each iteration
-                        if matches!(message, StreamElement::FlushAndRestart) {
-                            sender.flush();
+                        match sender.enqueue(message.clone()) {
+                            Ok(()) => {}
+                            Err(TryFlushError::Full) => self.must_flush = true, // Mark for yielding
+                            Err(TryFlushError::Disconnected) => panic!(),
                         }
                     }
                 }
@@ -117,15 +144,26 @@ where
                 let index = self.next_strategy.index(item);
                 for sender in self.sender_groups.iter() {
                     let index = index % sender.0.len();
-                    self.senders
+                    match self
+                        .senders
                         .get_mut(&sender.0[index])
                         .unwrap()
-                        .enqueue(message.clone());
+                        .enqueue(message.clone())
+                    {
+                        Ok(()) => {}
+                        Err(TryFlushError::Full) => self.must_flush = true, // Mark for yielding
+                        Err(TryFlushError::Disconnected) => panic!(),
+                    }
+                }
+                if self.must_flush {
+                    log::debug!("Empty input, yeielding {}", self.metadata.as_ref().unwrap().coord);
+                    return StreamElement::Yield;
                 }
             }
-            StreamElement::FlushBatch => {
-                for (_, batcher) in self.senders.iter_mut() {
-                    batcher.flush();
+            StreamElement::FlushBatch | StreamElement::Yield => {
+                match self.flush_all() {
+                    Ok(()) => {}
+                    Err(e) => self.must_flush = true,
                 }
             }
         };

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 
-use crate::channel::BoundedChannelSender;
+use crate::channel::{BoundedChannelSender, TrySendError};
 use crate::network::multiplexer::MultiplexingSender;
 use crate::network::{NetworkMessage, ReceiverEndpoint};
 use crate::operator::ExchangeData;
@@ -67,6 +67,22 @@ impl<Out: ExchangeData> NetworkSender<Out> {
                 )
             }),
             NetworkSenderImpl::Remote(sender) => sender.send(self.receiver_endpoint, message),
+        }
+    }
+
+    /// Send a message to a replica.
+    pub fn try_send(
+        &self,
+        message: NetworkMessage<Out>,
+    ) -> Result<(), TrySendError<NetworkMessage<Out>>> {
+        get_profiler().items_out(
+            message.sender,
+            self.receiver_endpoint.coord,
+            message.num_items(),
+        );
+        match &self.sender {
+            NetworkSenderImpl::Local(sender) => sender.try_send(message),
+            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
         }
     }
 

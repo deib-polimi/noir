@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::block::{BlockStructure, OperatorReceiver, OperatorStructure};
-use crate::channel::{RecvTimeoutError, SelectResult};
+use crate::channel::{RecvTimeoutError, SelectResult, TryRecvError};
 use crate::network::{Coord, NetworkMessage};
 use crate::operator::start::{SingleStartBlockReceiver, StartBlockReceiver};
 use crate::operator::{Data, ExchangeData, StreamElement};
@@ -330,6 +330,12 @@ impl<OutL: ExchangeData, OutR: ExchangeData> StartBlockReceiver<TwoSidesItem<Out
 
     fn recv(&mut self) -> NetworkMessage<TwoSidesItem<OutL, OutR>> {
         self.select(None).expect("receiver failed")
+    }
+
+    fn try_recv(
+        &mut self,
+    ) -> Result<NetworkMessage<TwoSidesItem<OutL, OutR>>, super::TryRecvError> {
+        todo!()
     }
 
     fn structure(&self) -> BlockStructure {

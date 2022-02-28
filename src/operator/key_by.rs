@@ -55,6 +55,7 @@ where
             StreamElement::Terminate => StreamElement::Terminate,
             StreamElement::FlushAndRestart => StreamElement::FlushAndRestart,
             StreamElement::FlushBatch => StreamElement::FlushBatch,
+            StreamElement::Yield => StreamElement::Yield, //TODO: Check
         }
     }
 

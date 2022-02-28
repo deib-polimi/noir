@@ -81,7 +81,10 @@ where
 
             let item = self.prev.next();
             // the manager is not interested in FlushBatch and Terminate
-            if matches!(item, StreamElement::FlushBatch | StreamElement::Terminate) {
+            if matches!(
+                item,
+                StreamElement::FlushBatch | StreamElement::Terminate | StreamElement::Yield
+            ) {
                 return item.map(|_| unreachable!());
             }
 
@@ -109,6 +112,7 @@ where
                     }
                     StreamElement::Watermark(ts) => StreamElement::Watermark(ts),
                     StreamElement::FlushAndRestart => StreamElement::FlushAndRestart,
+                    StreamElement::Yield => return StreamElement::Yield, //TODO: Check
                 });
             }
         }

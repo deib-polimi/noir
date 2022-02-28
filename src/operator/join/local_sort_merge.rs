@@ -194,6 +194,7 @@ impl<
                 }
                 StreamElement::FlushBatch => return StreamElement::FlushBatch,
                 StreamElement::Terminate => return StreamElement::Terminate,
+                StreamElement::Yield => return StreamElement::Yield, //TODO: Check
             }
         }
     }

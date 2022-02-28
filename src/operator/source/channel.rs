@@ -86,16 +86,8 @@ impl<Out: Data + core::fmt::Debug> Operator<Out> for ChannelSource<Out> {
                 StreamElement::FlushBatch
             }
             Err(TryRecvError::Empty) => {
-                log::debug!("flushed and no values ready, blocking");
                 self.retry_count = 0;
-                match self.rx.recv() {
-                    Ok(t) => StreamElement::Item(t),
-                    Err(RecvError::Disconnected) => {
-                        self.terminated = true;
-                        log::info!("Stream disconnected");
-                        StreamElement::FlushAndRestart
-                    }
-                }
+                StreamElement::Yield
             }
             Err(TryRecvError::Disconnected) => {
                 self.terminated = true;

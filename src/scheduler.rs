@@ -2,12 +2,13 @@ use parking_lot::Mutex;
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 use itertools::Itertools;
 
 use crate::block::{wait_structure, BatchMode, BlockStructure, InnerBlock};
-use crate::channel::{BoundedChannelSender, UnboundedChannelReceiver, UnboundedChannelSender};
+use crate::channel::{
+    BoundedChannelReceiver, BoundedChannelSender, UnboundedChannelReceiver, UnboundedChannelSender,
+};
 use crate::config::{EnvironmentConfig, ExecutionRuntime, LocalRuntimeConfig, RemoteRuntimeConfig};
 use crate::network::{Coord, NetworkTopology};
 use crate::operator::{Data, Operator};
@@ -43,7 +44,7 @@ pub(crate) struct StartHandle {
     /// Sender for the `ExecutionMetadata` sent to the worker.
     starter: BoundedChannelSender<ExecutionMetadata>,
     /// `JoinHandle` used to wait until a block has finished working.
-    join_handle: JoinHandle<()>,
+    join_handle: BoundedChannelReceiver<()>,
 }
 
 /// Information about a block in the job graph.
@@ -199,7 +200,7 @@ impl Scheduler {
         }
 
         for handle in join {
-            handle.join().unwrap();
+            handle.recv().unwrap();
         }
         network.lock().stop_and_wait();
 
@@ -378,7 +379,7 @@ impl Scheduler {
 impl StartHandle {
     pub(crate) fn new(
         starter: BoundedChannelSender<ExecutionMetadata>,
-        join_handle: JoinHandle<()>,
+        join_handle: BoundedChannelReceiver<()>,
     ) -> Self {
         Self {
             starter,

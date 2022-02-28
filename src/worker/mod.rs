@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
 use crate::block::{BlockStructure, InnerBlock};
-use crate::channel::{BoundedChannelReceiver, UnboundedChannelSender};
+use crate::channel::{BoundedChannelReceiver, BoundedChannelSender, UnboundedChannelSender};
 use crate::network::Coord;
 use crate::operator::{Data, Operator, StreamElement};
 use crate::scheduler::{ExecutionMetadata, StartHandle};
@@ -61,28 +61,25 @@ pub(crate) fn spawn_worker<Out: Data, OperatorChain>(
 where
     OperatorChain: Operator<Out> + 'static,
 {
-    let (sender, receiver) = BoundedChannelReceiver::new(1);
-    let join_handle = std::thread::Builder::new()
-        .name(format!("Block{}", block.id))
-        .spawn(move || worker(block, receiver, structure_sender))
-        .unwrap();
-    StartHandle::new(sender, join_handle)
+    let (tx_start, rx_start) = BoundedChannelReceiver::new(1);
+    let (tx_end, rx_end) = BoundedChannelReceiver::new(1);
+
+    rayon::spawn(move || wait_then_run(block, rx_start, tx_end, structure_sender));
+
+    StartHandle::new(tx_start, rx_end)
 }
 
-fn worker<Out: Data, OperatorChain>(
+fn wait_then_run<Out: Data, OperatorChain>(
     mut block: InnerBlock<Out, OperatorChain>,
-    metadata_receiver: BoundedChannelReceiver<ExecutionMetadata>,
+    rx_start: BoundedChannelReceiver<ExecutionMetadata>,
+    tx_end: BoundedChannelSender<()>,
     structure_sender: UnboundedChannelSender<(Coord, BlockStructure)>,
 ) where
     OperatorChain: Operator<Out> + 'static,
 {
-    let metadata = metadata_receiver.recv().unwrap();
-    drop(metadata_receiver);
-    info!(
-        "Starting worker for {}: {}",
-        metadata.coord,
-        block.to_string(),
-    );
+    let metadata = rx_start.recv().unwrap();
+    drop(rx_start);
+
     // remember in the thread-local the coordinate of this block
     COORD.with(|x| *x.borrow_mut() = Some(metadata.coord));
     // notify the operators that we are about to start
@@ -92,12 +89,72 @@ fn worker<Out: Data, OperatorChain>(
     structure_sender.send((metadata.coord, structure)).unwrap();
     drop(structure_sender);
 
-    let mut catch_panic = CatchPanic::new(|| {
+    info!(
+        "Starting worker for {}: {}",
+        metadata.coord,
+        block.to_string(),
+    );
+    rayon::spawn(move || run(block, metadata, tx_end));
+}
+
+fn run<Out: Data, OperatorChain>(
+    mut block: InnerBlock<Out, OperatorChain>,
+    metadata: ExecutionMetadata,
+    tx_end: BoundedChannelSender<()>,
+) where
+    OperatorChain: Operator<Out> + 'static,
+{
+    // log::trace!("Running {}", metadata.coord);
+    let mut catch_panic = CatchPanic::new(move || {
         error!("Worker {} has crashed!", metadata.coord);
     });
-    while !matches!(block.operators.next(), StreamElement::Terminate) {
-        // nothing to do
+    // std::thread::sleep(std::time::Duration::from_millis(10));
+    loop {
+        match block.operators.next() {
+            StreamElement::Terminate => {
+                tx_end.send(()).unwrap();
+                catch_panic.defuse();
+                break;
+            }
+            StreamElement::Yield => {
+                rayon::spawn_fifo(move || run(block, metadata, tx_end));
+                catch_panic.defuse();
+                break;
+            }
+            _ => {} // Nothing to do
+        }
     }
-    catch_panic.defuse();
-    info!("Worker {} completed, exiting", metadata.coord);
 }
+
+// fn worker<Out: Data, OperatorChain>(
+//     mut block: InnerBlock<Out, OperatorChain>,
+//     metadata_receiver: BoundedChannelReceiver<ExecutionMetadata>,
+//     structure_sender: UnboundedChannelSender<(Coord, BlockStructure)>,
+// ) where
+//     OperatorChain: Operator<Out> + 'static,
+// {
+//     let metadata = metadata_receiver.recv().unwrap();
+//     drop(metadata_receiver);
+//     info!(
+//         "Starting worker for {}: {}",
+//         metadata.coord,
+//         block.to_string(),
+//     );
+//     // remember in the thread-local the coordinate of this block
+//     COORD.with(|x| *x.borrow_mut() = Some(metadata.coord));
+//     // notify the operators that we are about to start
+//     block.operators.setup(metadata.clone());
+
+//     let structure = block.operators.structure();
+//     structure_sender.send((metadata.coord, structure)).unwrap();
+//     drop(structure_sender);
+
+//     let mut catch_panic = CatchPanic::new(|| {
+//         error!("Worker {} has crashed!", metadata.coord);
+//     });
+//     while !matches!(block.operators.next(), StreamElement::Terminate) {
+//         // nothing to do
+//     }
+//     catch_panic.defuse();
+//     info!("Worker {} completed, exiting", metadata.coord);
+// }

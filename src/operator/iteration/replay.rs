@@ -257,6 +257,7 @@ where
                 }
                 // messages to forward without replaying
                 StreamElement::FlushBatch => item,
+                StreamElement::Yield => return StreamElement::Yield, //TODO: Check
                 StreamElement::Terminate => {
                     debug!("Replay at {} is terminating", self.coord);
                     item

@@ -77,6 +77,7 @@ where
                 StreamElement::FlushBatch => return StreamElement::FlushBatch,
                 StreamElement::FlushAndRestart => self.received_end = true,
                 StreamElement::Terminate => return StreamElement::Terminate,
+                StreamElement::Yield => return StreamElement::Yield,
             }
         }
 
