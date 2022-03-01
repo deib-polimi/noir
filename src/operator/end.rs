@@ -4,6 +4,7 @@ use crate::block::{
     BatchMode, Batcher, BlockStructure, Connection, NextStrategy, OperatorStructure, SenderList,
     TryFlushError,
 };
+use crate::coord;
 use crate::network::ReceiverEndpoint;
 use crate::operator::{ExchangeData, KeyerFn, Operator, StreamElement};
 use crate::scheduler::ExecutionMetadata;
@@ -67,7 +68,10 @@ where
         for (_, sender) in self.senders.iter_mut() {
             match sender.flush() {
                 Ok(_) => {}
-                Err(e) => return Err(e),
+                Err(e) => {
+                    log::debug!("Couldn't flush {} -> {}", self.metadata.as_ref().unwrap().coord, sender.coord());
+                    return Err(e)
+                }
             }
         }
         Ok(())
@@ -105,7 +109,7 @@ where
             match self.flush_all() {
                 Ok(()) => self.must_flush = false,
                 Err(e) => {
-                    log::debug!("Must and could not flush, yielding {}", self.metadata.as_ref().unwrap().coord);
+                    log::debug!("{} Must and could not flush, yielding", coord!(self));
                     return StreamElement::Yield;
                 }
             }
@@ -155,16 +159,14 @@ where
                         Err(TryFlushError::Disconnected) => panic!(),
                     }
                 }
-                if self.must_flush {
-                    log::debug!("Empty input, yeielding {}", self.metadata.as_ref().unwrap().coord);
-                    return StreamElement::Yield;
-                }
             }
-            StreamElement::FlushBatch | StreamElement::Yield => {
-                match self.flush_all() {
-                    Ok(()) => {}
-                    Err(e) => self.must_flush = true,
-                }
+            StreamElement::Yield => {
+                log::debug!("{} Received Yield from downstream, marking for flush", coord!(self));
+                self.must_flush = true;
+            }
+            StreamElement::FlushBatch => {
+                log::debug!("{} Received FlushBatch from downstream, marking for flush", coord!(self));
+                self.must_flush = true;
             }
         };
 
@@ -178,7 +180,18 @@ where
             for (_, batcher) in self.senders.drain() {
                 batcher.end();
             }
+            self.must_flush = false;
         }
+
+        if self.must_flush {
+            log::debug!("{} Flushing and yielding", coord!(self));
+            match self.flush_all() {
+                Ok(()) => {}
+                Err(e) => self.must_flush = true,
+            }
+            return StreamElement::Yield;
+        }
+
         to_return
     }
 

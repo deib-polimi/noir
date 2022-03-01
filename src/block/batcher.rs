@@ -132,6 +132,10 @@ impl<Out: ExchangeData> Batcher<Out> {
             self.remote_sender.send(message).unwrap();
         }
     }
+
+    pub fn coord(&self) -> Coord {
+        self.coord
+    }
 }
 
 impl BatchMode {

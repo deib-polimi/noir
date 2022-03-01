@@ -233,6 +233,9 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> Operator<Out>
                             );
                             return self.next();
                         }
+                        StreamElement::Yield => {
+                            panic!("Start block received Yield! This should never happen!");
+                        }
                         _ => item,
                     }
                 }

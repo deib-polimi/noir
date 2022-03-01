@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use itertools::Itertools;
 
-use crate::block::{wait_structure, BatchMode, BlockStructure, InnerBlock};
+use crate::block::{wait_structure, BatchMode, BlockStructure, InnerBlock, JobGraphGenerator};
 use crate::channel::{
     BoundedChannelReceiver, BoundedChannelSender, UnboundedChannelReceiver, UnboundedChannelSender,
 };
@@ -14,7 +14,7 @@ use crate::network::{Coord, NetworkTopology};
 use crate::operator::{Data, Operator};
 use crate::profiler::{wait_profiler, ProfilerResult};
 use crate::stream::BlockId;
-use crate::worker::spawn_worker;
+use crate::worker::{spawn_worker, spawn_scoped_worker};
 use crate::TracingData;
 
 /// The identifier of an host.
@@ -73,6 +73,8 @@ pub(crate) struct Scheduler {
     prev_blocks: HashMap<BlockId, Vec<(BlockId, TypeId)>, ahash::RandomState>,
     /// Information about the blocks known to the scheduler.
     block_info: HashMap<BlockId, SchedulerBlockInfo, ahash::RandomState>,
+
+    block_init: Vec<(Coord, Box<dyn FnOnce(&rayon::ScopeFifo, ExecutionMetadata) -> (StartHandle, BlockStructure) + Send>)>,
     /// The list of handles of each block in the execution graph.
     start_handles: Vec<(Coord, StartHandle)>,
     /// The network topology that keeps track of all the connections inside the execution graph.
@@ -90,6 +92,7 @@ impl Scheduler {
             next_blocks: Default::default(),
             prev_blocks: Default::default(),
             block_info: Default::default(),
+            block_init: Default::default(),
             start_handles: Default::default(),
             network: NetworkTopology::new(config.clone()),
             config,
@@ -136,10 +139,16 @@ impl Scheduler {
         self.block_info.insert(block_id, info);
 
         for (coord, block) in blocks {
-            // spawn the actual worker
-            let start_handle = spawn_worker(block, self.block_structure_sender.clone());
-            self.start_handles.push((coord, start_handle));
+            self.block_init.push(
+                (coord, Box::new(move |s, m| spawn_scoped_worker(s, block, m)))
+            );
         }
+
+        // for (coord, block) in blocks {
+        //     // spawn the actual worker
+        //     let start_handle = spawn_worker(block, self.block_structure_sender.clone());
+        //     self.start_handles.push((coord, start_handle));
+        // }
     }
 
     /// Connect a pair of blocks inside the job graph.
@@ -182,30 +191,59 @@ impl Scheduler {
         let mut join = vec![];
 
         let network = Arc::new(Mutex::new(self.network));
-        // start the execution
-        for (coord, handle) in self.start_handles {
-            let block_info = &self.block_info[&coord.block_id];
-            let replicas = block_info.replicas.values().flatten().cloned().collect();
-            let global_id = block_info.global_ids[&coord];
-            let metadata = ExecutionMetadata {
-                coord,
-                replicas,
-                global_id,
-                prev: network.lock().prev(coord),
-                network: network.clone(),
-                batch_mode: block_info.batch_mode,
-            };
-            handle.starter.send(metadata).unwrap();
-            join.push(handle.join_handle);
-        }
 
-        for handle in join {
-            handle.recv().unwrap();
-        }
+        let mut job_graph_generator = JobGraphGenerator::new();
+        let mut block_structures = vec![];
+
+        rayon::scope_fifo(|s| {
+            // start the execution
+            for (coord, init_fn) in self.block_init {
+                let block_info = &self.block_info[&coord.block_id];
+                let replicas = block_info.replicas.values().flatten().cloned().collect();
+                let global_id = block_info.global_ids[&coord];
+                let metadata = ExecutionMetadata {
+                    coord,
+                    replicas,
+                    global_id,
+                    prev: network.lock().prev(coord),
+                    network: network.clone(),
+                    batch_mode: block_info.batch_mode,
+                };
+                let (handle, structure) = init_fn(s, metadata);
+                join.push(handle.join_handle);
+                block_structures.push((coord, structure.clone()));
+                job_graph_generator.add_block(coord.block_id, structure);
+            }
+        });
+                
+
+        // // start the execution
+        // for (coord, handle) in self.start_handles {
+        //     let block_info = &self.block_info[&coord.block_id];
+        //     let replicas = block_info.replicas.values().flatten().cloned().collect();
+        //     let global_id = block_info.global_ids[&coord];
+        //     let metadata = ExecutionMetadata {
+        //         coord,
+        //         replicas,
+        //         global_id,
+        //         prev: network.lock().prev(coord),
+        //         network: network.clone(),
+        //         batch_mode: block_info.batch_mode,
+        //     };
+        //     debug!("Sending metadata to {}", metadata.coord);
+        //     handle.starter.send(metadata).unwrap();
+        //     debug!("Sent.");
+        //     join.push(handle.join_handle);
+        // }
+
+        // for handle in join {
+        //     handle.recv().unwrap();
+        // }
         network.lock().stop_and_wait();
 
-        drop(self.block_structure_sender);
-        let block_structures = wait_structure(self.block_structure_receiver);
+
+        let job_graph = job_graph_generator.finalize();
+        debug!("Job graph in dot format:\n{}", job_graph);
         let profiler_results = wait_profiler();
 
         Self::log_tracing_data(block_structures, profiler_results);

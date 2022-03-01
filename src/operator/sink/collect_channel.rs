@@ -37,7 +37,7 @@ where
             match tx.try_send(item) {
                 Ok(()) => {}
                 Err(TrySendError::Full(t)) => {
-                    log::debug!("Output channel full, yeielding {}", self.metadata.as_ref().unwrap().coord);
+                    log::debug!("Output channel full, yielding {} [1]", self.metadata.as_ref().unwrap().coord);
                     self.pending_item = Some(t);
                     return StreamElement::Yield;
                 }
@@ -51,7 +51,7 @@ where
                 match tx.try_send(t) {
                     Ok(()) => StreamElement::Item(()),
                     Err(TrySendError::Full(t)) => {
-                        log::debug!("Output channel full, yeielding {}", self.metadata.as_ref().unwrap().coord);
+                        log::debug!("Output channel full, yielding {} [2]", self.metadata.as_ref().unwrap().coord);
                         self.pending_item = Some(t);
                         StreamElement::Yield
                     }
@@ -65,7 +65,7 @@ where
             }
             StreamElement::FlushBatch => StreamElement::FlushBatch,
             StreamElement::FlushAndRestart => StreamElement::FlushAndRestart,
-            StreamElement::Yield => StreamElement::Yield, //TODO: Check
+            StreamElement::Yield => StreamElement::Yield,
         }
     }
 

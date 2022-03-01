@@ -193,3 +193,10 @@ impl<Key: DataKey, Out: Data> StreamElement<KeyValue<Key, Out>> {
         }
     }
 }
+
+#[macro_export]
+macro_rules! coord {
+    ($self:ident) => {
+        {$self.metadata.as_ref().unwrap().coord}
+    };
+}

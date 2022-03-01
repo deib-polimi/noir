@@ -69,7 +69,6 @@ impl<Out: Data + core::fmt::Debug> Operator<Out> for ChannelSource<Out> {
         }
         let result = self.rx.try_recv();
 
-        log::debug!("Channel received stuff");
         match result {
             Ok(t) => {
                 self.retry_count = 0;
@@ -83,10 +82,9 @@ impl<Out: Data + core::fmt::Debug> Operator<Out> for ChannelSource<Out> {
             Err(TryRecvError::Empty) if self.retry_count == MAX_RETRY => {
                 log::debug!("no values ready after {MAX_RETRY} tries, sending flush");
                 self.retry_count += 1;
-                StreamElement::FlushBatch
+                StreamElement::FlushBatch // TODO: if Yield implicitly flushes this is not needed
             }
             Err(TryRecvError::Empty) => {
-                self.retry_count = 0;
                 StreamElement::Yield
             }
             Err(TryRecvError::Disconnected) => {

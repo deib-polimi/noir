@@ -55,21 +55,47 @@ impl<F: FnOnce()> Drop for CatchPanic<F> {
 }
 
 pub(crate) fn spawn_worker<Out: Data, OperatorChain>(
+    s: &rayon::ScopeFifo,
     block: InnerBlock<Out, OperatorChain>,
     structure_sender: UnboundedChannelSender<(Coord, BlockStructure)>,
 ) -> StartHandle
 where
     OperatorChain: Operator<Out> + 'static,
 {
-    let (tx_start, rx_start) = BoundedChannelReceiver::new(1);
+    let (tx_start, rx_start) = BoundedChannelReceiver::new(0);
     let (tx_end, rx_end) = BoundedChannelReceiver::new(1);
+    debug!("Creating start handle for block {}", block.id);
 
-    rayon::spawn(move || wait_then_run(block, rx_start, tx_end, structure_sender));
+    s.spawn_fifo(move |s| wait_then_run(s, block, rx_start, tx_end, structure_sender));
 
     StartHandle::new(tx_start, rx_end)
 }
 
+pub(crate) fn spawn_scoped_worker<Out: Data, OperatorChain>(s: &rayon::ScopeFifo, mut block: InnerBlock<Out, OperatorChain>, metadata: ExecutionMetadata) -> (StartHandle, BlockStructure)
+where
+    OperatorChain: Operator<Out> + 'static, {
+    let (tx_start, rx_start) = BoundedChannelReceiver::new(0);
+    let (tx_end, rx_end) = BoundedChannelReceiver::new(1);
+    debug!("Creating start handle for block {}", block.id);
+
+    COORD.with(|x| *x.borrow_mut() = Some(metadata.coord));
+    block.operators.setup(metadata.clone());
+
+    let structure = block.operators.structure();
+
+
+    info!(
+        "Starting worker for {}: {}",
+        metadata.coord,
+        block.to_string(),
+    );
+    s.spawn_fifo(move |s| run(s, block, metadata, tx_end));
+
+    (StartHandle::new(tx_start, rx_end), structure)
+}
+
 fn wait_then_run<Out: Data, OperatorChain>(
+    s: &rayon::ScopeFifo,
     mut block: InnerBlock<Out, OperatorChain>,
     rx_start: BoundedChannelReceiver<ExecutionMetadata>,
     tx_end: BoundedChannelSender<()>,
@@ -77,13 +103,18 @@ fn wait_then_run<Out: Data, OperatorChain>(
 ) where
     OperatorChain: Operator<Out> + 'static,
 {
+    debug!("Waiting for metadata, block {}", block.id);
     let metadata = rx_start.recv().unwrap();
     drop(rx_start);
+
+    debug!("Received metadata for {}", metadata.coord);
 
     // remember in the thread-local the coordinate of this block
     COORD.with(|x| *x.borrow_mut() = Some(metadata.coord));
     // notify the operators that we are about to start
     block.operators.setup(metadata.clone());
+
+    debug!("Setup done for {}", metadata.coord);
 
     let structure = block.operators.structure();
     structure_sender.send((metadata.coord, structure)).unwrap();
@@ -94,10 +125,11 @@ fn wait_then_run<Out: Data, OperatorChain>(
         metadata.coord,
         block.to_string(),
     );
-    rayon::spawn(move || run(block, metadata, tx_end));
+    s.spawn_fifo(move |s| run(s, block, metadata, tx_end));
 }
 
 fn run<Out: Data, OperatorChain>(
+    s: &rayon::ScopeFifo,
     mut block: InnerBlock<Out, OperatorChain>,
     metadata: ExecutionMetadata,
     tx_end: BoundedChannelSender<()>,
@@ -110,20 +142,20 @@ fn run<Out: Data, OperatorChain>(
     });
     // std::thread::sleep(std::time::Duration::from_millis(10));
     loop {
+        // std::thread::sleep(std::time::Duration::from_millis(100));
         match block.operators.next() {
             StreamElement::Terminate => {
                 tx_end.send(()).unwrap();
-                catch_panic.defuse();
                 break;
             }
             StreamElement::Yield => {
-                rayon::spawn_fifo(move || run(block, metadata, tx_end));
-                catch_panic.defuse();
+                s.spawn_fifo(move |s| run(s, block, metadata, tx_end));
                 break;
             }
             _ => {} // Nothing to do
         }
     }
+    catch_panic.defuse();
 }
 
 // fn worker<Out: Data, OperatorChain>(
