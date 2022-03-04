@@ -14,7 +14,7 @@ use crate::network::{Coord, NetworkTopology};
 use crate::operator::{Data, Operator};
 use crate::profiler::{wait_profiler, ProfilerResult};
 use crate::stream::BlockId;
-use crate::worker::{spawn_worker, spawn_scoped_worker};
+use crate::worker::{spawn_scoped_worker};
 use crate::TracingData;
 
 /// The identifier of an host.

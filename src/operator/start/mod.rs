@@ -257,12 +257,29 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> Operator<Out>
             match self.receiver.try_recv() {
                 Ok(net_msg) => {
                     self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
+                    self.already_timed_out = false;
                     return self.next();
                 }
                 Err(TryRecvError::Empty) if cnt < 8 => cnt += 1, // TODO: park
                 Err(TryRecvError::Empty) => {
-                    log::debug!("Empty input, yielding {}", self.metadata.as_ref().unwrap().coord);
-                    return StreamElement::Yield
+                    if self.already_timed_out {
+                        match self.receiver.recv_timeout(Duration::from_millis(1)) {
+                            Ok(net_msg) => {
+                                self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
+                                self.already_timed_out = false;
+                                return self.next();
+                            }
+                            Err(RecvTimeoutError::Timeout) => {
+                                log::debug!("Empty input after recv_timeout, yielding {}", self.metadata.as_ref().unwrap().coord);
+                                return StreamElement::Yield
+                            }
+                            Err(RecvTimeoutError::Disconnected) => unimplemented!(),
+                        }
+                    } else {
+                        log::debug!("Empty input, yielding {}", self.metadata.as_ref().unwrap().coord);
+                        self.already_timed_out = true;
+                        return StreamElement::Yield
+                    }
                 }, // TODO: park
                 Err(TryRecvError::Disconnected) => unimplemented!(),
             }

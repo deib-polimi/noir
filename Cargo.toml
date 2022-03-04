@@ -80,6 +80,8 @@ ahash = "0.7"
 
 rayon = "1.5"
 
+thiserror = "1.0"
+
 [dev-dependencies]
 # for the tests
 tempfile = "3.3"

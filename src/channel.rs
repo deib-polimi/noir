@@ -17,7 +17,7 @@ use crossbeam_channel::{
 use flume::{
     bounded, unbounded, Receiver, RecvError as ExtRecvError,
     RecvTimeoutError as ExtRecvTimeoutError, Sender, TryRecvError as ExtTryRecvError,
-    TrySendError as ExtTrySendError,
+    TrySendError as ExtTrySendError, SendTimeoutError
 };
 
 pub trait ChannelItem: Send + 'static {}
@@ -97,6 +97,11 @@ impl<T: ChannelItem> BoundedChannelSender<T> {
         self.0
             .send(item)
             .map_err(|_| anyhow!("Error while sending"))
+    }
+    /// Send a message in the channel, blocking if it's full.
+    #[inline]
+    pub fn send_timeout(&self, item: T, timeout: Duration) -> Result<(), SendTimeoutError<T>> {
+        self.0.send_timeout(item, timeout)
     }
 
     #[inline]

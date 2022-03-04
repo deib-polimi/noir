@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{anyhow, Result};
 
 use crate::channel::{BoundedChannelSender, TrySendError};
@@ -71,6 +73,19 @@ impl<Out: ExchangeData> NetworkSender<Out> {
     }
 
     /// Send a message to a replica.
+    pub fn send_timeout(&self, message: NetworkMessage<Out>, timeout: Duration) -> Result<(), SendTimeoutError<NetworkMessage<Out>>> {
+        get_profiler().items_out(
+            message.sender,
+            self.receiver_endpoint.coord,
+            message.num_items(),
+        );
+        match &self.sender {
+            NetworkSenderImpl::Local(sender) => sender.send_timeout(message, timeout).map_err(SendTimeoutError::from),
+            NetworkSenderImpl::Remote(sender) => { todo!(); }//sender.send(self.receiver_endpoint, message) }
+        }
+    }
+
+    /// Send a message to a replica.
     pub fn try_send(
         &self,
         message: NetworkMessage<Out>,
@@ -91,6 +106,23 @@ impl<Out: ExchangeData> NetworkSender<Out> {
         match &self.sender {
             NetworkSenderImpl::Local(inner) => Some(inner),
             NetworkSenderImpl::Remote(_) => None,
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum SendTimeoutError<T> {
+    #[error("Timed out")]
+    Timeout(T),
+    #[error("Remote disconnected")]
+    Disconnected(T),
+}
+
+impl<T> From<flume::SendTimeoutError<T>> for SendTimeoutError<T> {
+    fn from(e: flume::SendTimeoutError<T>) -> Self {
+        match e {
+            flume::SendTimeoutError::Timeout(a) => Self::Timeout(a),
+            flume::SendTimeoutError::Disconnected(a) => Self::Disconnected(a),
         }
     }
 }

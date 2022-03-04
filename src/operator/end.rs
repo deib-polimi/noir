@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::block::{
     BatchMode, Batcher, BlockStructure, Connection, NextStrategy, OperatorStructure, SenderList,
-    TryFlushError,
+    FlushError,
 };
 use crate::coord;
 use crate::network::ReceiverEndpoint;
@@ -27,6 +28,7 @@ where
     feedback_id: Option<BlockId>,
     ignore_block_ids: Vec<BlockId>,
     must_flush: bool,
+    already_tried_flush: bool,
 }
 
 impl<Out: ExchangeData, OperatorChain, IndexFn> EndBlock<Out, OperatorChain, IndexFn>
@@ -49,6 +51,7 @@ where
             feedback_id: None,
             ignore_block_ids: Default::default(),
             must_flush: false,
+            already_tried_flush: false,
         }
     }
 
@@ -64,16 +67,24 @@ where
         self.ignore_block_ids.push(block_id);
     }
 
-    pub(crate) fn flush_all(&mut self) -> Result<(), TryFlushError> {
+    pub(crate) fn flush_all(&mut self) -> Result<(), FlushError> {
         for (_, sender) in self.senders.iter_mut() {
-            match sender.flush() {
+            let result = if self.already_tried_flush {
+                sender.flush_timeout(Duration::from_millis(1))
+            } else {
+                sender.try_flush()
+            };
+
+            match result {
                 Ok(_) => {}
                 Err(e) => {
                     log::debug!("Couldn't flush {} -> {}", self.metadata.as_ref().unwrap().coord, sender.coord());
+                    self.already_tried_flush = true;
                     return Err(e)
                 }
             }
         }
+        self.already_tried_flush = false;
         Ok(())
     }
 }
@@ -138,8 +149,8 @@ where
                         let sender = self.senders.get_mut(&sender).unwrap();
                         match sender.enqueue(message.clone()) {
                             Ok(()) => {}
-                            Err(TryFlushError::Full) => self.must_flush = true, // Mark for yielding
-                            Err(TryFlushError::Disconnected) => panic!(),
+                            Err(FlushError::Pending) => self.must_flush = true, // Mark for yielding
+                            Err(FlushError::Disconnected) => panic!(),
                         }
                     }
                 }
@@ -155,8 +166,8 @@ where
                         .enqueue(message.clone())
                     {
                         Ok(()) => {}
-                        Err(TryFlushError::Full) => self.must_flush = true, // Mark for yielding
-                        Err(TryFlushError::Disconnected) => panic!(),
+                        Err(FlushError::Pending) => self.must_flush = true, // Mark for yielding
+                        Err(FlushError::Disconnected) => panic!(),
                     }
                 }
             }
