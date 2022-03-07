@@ -260,10 +260,10 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> Operator<Out>
                     self.already_timed_out = false;
                     return self.next();
                 }
-                Err(TryRecvError::Empty) if cnt < 8 => cnt += 1, // TODO: park
+                Err(TryRecvError::Empty) if cnt < 0 => cnt += 1, // TODO: park
                 Err(TryRecvError::Empty) => {
                     if self.already_timed_out {
-                        match self.receiver.recv_timeout(Duration::from_millis(1)) {
+                        match self.receiver.recv_timeout(Duration::from_micros(10)) {
                             Ok(net_msg) => {
                                 self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
                                 self.already_timed_out = false;

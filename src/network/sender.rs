@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use tokio::sync::mpsc::*;
+use tokio::sync::mpsc;
 
-use crate::channel::{BoundedChannelSender, TrySendError};
 use crate::network::multiplexer::MultiplexingSender;
 use crate::network::{NetworkMessage, ReceiverEndpoint};
 use crate::operator::ExchangeData;
@@ -28,7 +28,7 @@ pub(crate) struct NetworkSender<Out: ExchangeData> {
 #[derive(Clone)]
 pub(crate) enum NetworkSenderImpl<Out: ExchangeData> {
     /// The channel is local, use an in-memory channel.
-    Local(BoundedChannelSender<NetworkMessage<Out>>),
+    Local(Sender<NetworkMessage<Out>>),
     /// The channel is remote, use the multiplexer.
     Remote(MultiplexingSender<Out>),
 }
@@ -37,7 +37,7 @@ impl<Out: ExchangeData> NetworkSender<Out> {
     /// Create a new local sender that sends the data directly to the recipient.
     pub fn local(
         receiver_endpoint: ReceiverEndpoint,
-        sender: BoundedChannelSender<NetworkMessage<Out>>,
+        sender: Sender<NetworkMessage<Out>>,
     ) -> Self {
         Self {
             receiver_endpoint,
@@ -54,42 +54,35 @@ impl<Out: ExchangeData> NetworkSender<Out> {
     }
 
     /// Send a message to a replica.
-    pub fn send(&self, message: NetworkMessage<Out>) -> Result<()> {
+    pub fn send(&self, message: NetworkMessage<Out>) -> Result<(), SendError<NetworkMessage<Out>>> {
         get_profiler().items_out(
             message.sender,
             self.receiver_endpoint.coord,
             message.num_items(),
         );
         match &self.sender {
-            NetworkSenderImpl::Local(sender) => sender.send(message).map_err(|e| {
-                anyhow!(
-                    "Failed to send to channel to {:?}: {:?}",
-                    self.receiver_endpoint,
-                    e
-                )
-            }),
-            NetworkSenderImpl::Remote(sender) => sender.send(self.receiver_endpoint, message),
+            NetworkSenderImpl::Local(sender) => sender.blocking_send(message).map_err(SendError::from),
+            NetworkSenderImpl::Remote(sender) => sender.send(self.receiver_endpoint, message).map_err(|e| SendError::Disconnected(e.0.1)),
         }
     }
 
     /// Send a message to a replica.
-    pub fn send_timeout(&self, message: NetworkMessage<Out>, timeout: Duration) -> Result<(), SendTimeoutError<NetworkMessage<Out>>> {
+    pub fn poll_send(&self, message: NetworkMessage<Out>, cx: std::task::Context<'_>) -> Result<(), SendError<NetworkMessage<Out>>> {
         get_profiler().items_out(
             message.sender,
             self.receiver_endpoint.coord,
             message.num_items(),
         );
         match &self.sender {
-            NetworkSenderImpl::Local(sender) => sender.send_timeout(message, timeout).map_err(SendTimeoutError::from),
-            NetworkSenderImpl::Remote(sender) => { todo!(); }//sender.send(self.receiver_endpoint, message) }
+            NetworkSenderImpl::Local(sender) => sender.blocking_send(message).map_err(SendError::from),
+            NetworkSenderImpl::Remote(sender) => sender.send(self.receiver_endpoint, message).map_err(|e| SendError::Disconnected(e.0.1)),
         }
     }
-
     /// Send a message to a replica.
     pub fn try_send(
         &self,
         message: NetworkMessage<Out>,
-    ) -> Result<(), TrySendError<NetworkMessage<Out>>> {
+    ) -> Result<(), mpsc::error::TrySendError<NetworkMessage<Out>>> {
         get_profiler().items_out(
             message.sender,
             self.receiver_endpoint.coord,
@@ -102,7 +95,7 @@ impl<Out: ExchangeData> NetworkSender<Out> {
     }
 
     /// Get the inner sender if the channel is local.
-    pub fn inner(&self) -> Option<&BoundedChannelSender<NetworkMessage<Out>>> {
+    pub fn inner(&self) -> Option<&Sender<NetworkMessage<Out>>> {
         match &self.sender {
             NetworkSenderImpl::Local(inner) => Some(inner),
             NetworkSenderImpl::Remote(_) => None,
@@ -110,12 +103,47 @@ impl<Out: ExchangeData> NetworkSender<Out> {
     }
 }
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error)]
+pub enum SendError<T> {
+    #[error("The channel has disconnected")]
+    Disconnected(T)
+}
+
+impl<T> std::fmt::Debug for SendError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Disconnected(arg0) => f.write_str("Disconnected"),
+        }
+    }
+}
+
+impl<T> From<mpsc::error::SendError<T>> for SendError<T> {
+    fn from(e: mpsc::error::SendError<T>) -> Self {
+        Self::Disconnected(e.0)
+    }
+}
+
+impl<T> From<crate::channel::SendError<T>> for SendError<T> {
+    fn from(e: crate::channel::SendError<T>) -> Self {
+        Self::Disconnected(e.0)
+    }
+} 
+
+#[derive(thiserror::Error)]
 pub enum SendTimeoutError<T> {
     #[error("Timed out")]
     Timeout(T),
     #[error("Remote disconnected")]
     Disconnected(T),
+}
+
+impl<T> std::fmt::Debug for SendTimeoutError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timeout(arg0) => f.write_str("Channel timed out"),
+            Self::Disconnected(arg0) => f.write_str("Disconnected"),
+        }
+    }
 }
 
 impl<T> From<flume::SendTimeoutError<T>> for SendTimeoutError<T> {

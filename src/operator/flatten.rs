@@ -1,12 +1,18 @@
 use core::iter::{IntoIterator, Iterator};
 use std::marker::PhantomData;
+use std::task::Poll;
 use std::time::Duration;
+
+use futures::{StreamExt, ready};
 
 use crate::block::{BlockStructure, OperatorStructure};
 use crate::operator::{Data, DataKey, Operator, StreamElement};
 use crate::scheduler::ExecutionMetadata;
 use crate::stream::{KeyValue, KeyedStream, Stream};
 
+use super::AsyncOperator;
+
+#[pin_project::pin_project]
 #[derive(Clone, Derivative)]
 #[derivative(Debug)]
 pub struct Flatten<In, Out, InnerIterator, PreviousOperators>
@@ -16,6 +22,7 @@ where
     Out: Data,
     InnerIterator: Iterator,
 {
+    #[pin]
     prev: PreviousOperators,
     // used to store elements that have not been returned by next() yet
     // buffer: VecDeque<StreamElement<NewOut>>,
@@ -43,6 +50,48 @@ where
             timestamp: None,
             _out: Default::default(),
             _iter_out: Default::default(),
+        }
+    }
+}
+
+impl<In, Out, InnerIterator, PreviousOperators> futures::Stream
+    for Flatten<In, Out, InnerIterator, PreviousOperators>
+where
+    PreviousOperators: AsyncOperator<In>,
+    In: Data + IntoIterator<IntoIter = InnerIterator, Item = InnerIterator::Item>,
+    Out: Data + Clone,
+    InnerIterator: Iterator<Item = Out> + Clone + Send,
+{
+    type Item = StreamElement<Out>;
+
+    fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        loop {
+            if let Some(ref mut inner) = this.frontiter {
+                match inner.next() {
+                    None => *this.frontiter = None,
+                    Some(item) => match this.timestamp {
+                        None => return Poll::Ready(Some(StreamElement::Item(item))),
+                        Some(ts) => return Poll::Ready(Some(StreamElement::Timestamped(item, *ts))),
+                    },
+                }
+            }
+            match ready!(this.prev.poll_next_unpin(cx)) {
+                Some(StreamElement::Item(inner)) => {
+                    *this.frontiter = Some(inner.into_iter());
+                    *this.timestamp = None;
+                }
+                Some(StreamElement::Timestamped(inner, ts)) => {
+                    *this.frontiter = Some(inner.into_iter());
+                    *this.timestamp = Some(ts);
+                }
+                Some(StreamElement::Watermark(ts)) => return Poll::Ready(Some(StreamElement::Watermark(ts))),
+                Some(StreamElement::FlushBatch) => return Poll::Ready(Some(StreamElement::FlushBatch)),
+                Some(StreamElement::Terminate) => return Poll::Ready(Some(StreamElement::Terminate)),
+                Some(StreamElement::FlushAndRestart) => return Poll::Ready(Some(StreamElement::FlushAndRestart)),
+                Some(StreamElement::Yield) => return Poll::Ready(Some(StreamElement::Yield)), //TODO: Check
+                None => return Poll::Ready(None),
+            }
         }
     }
 }

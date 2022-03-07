@@ -24,6 +24,7 @@ pub mod structure;
 ///
 /// `OperatorChain` is the type of the chain of operators inside the block. It must be an operator
 /// that yields values of type `Out`.
+#[pin_project::pin_project]
 #[derive(Debug, Clone)]
 pub(crate) struct InnerBlock<Out: Data, OperatorChain>
 where
@@ -32,6 +33,7 @@ where
     /// The identifier of the block inside the environment.
     pub(crate) id: BlockId,
     /// The current chain of operators.
+    #[pin]
     pub(crate) operators: OperatorChain,
     /// The batch mode of this block.
     pub(crate) batch_mode: BatchMode,

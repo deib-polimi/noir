@@ -11,10 +11,10 @@ use crate::channel::{
 };
 use crate::config::{EnvironmentConfig, ExecutionRuntime, LocalRuntimeConfig, RemoteRuntimeConfig};
 use crate::network::{Coord, NetworkTopology};
-use crate::operator::{Data, Operator};
+use crate::operator::{Data, Operator, StreamElement};
 use crate::profiler::{wait_profiler, ProfilerResult};
 use crate::stream::BlockId;
-use crate::worker::{spawn_scoped_worker};
+use crate::worker::{spawn_scoped_worker, spawn_async_worker};
 use crate::TracingData;
 
 /// The identifier of an host.
@@ -74,6 +74,8 @@ pub(crate) struct Scheduler {
     /// Information about the blocks known to the scheduler.
     block_info: HashMap<BlockId, SchedulerBlockInfo, ahash::RandomState>,
 
+    async_block_init: Vec<(Coord, Box<dyn FnOnce(&tokio::runtime::Handle, ExecutionMetadata) -> (StartHandle, BlockStructure) + Send>)>,
+    
     block_init: Vec<(Coord, Box<dyn FnOnce(&rayon::ScopeFifo, ExecutionMetadata) -> (StartHandle, BlockStructure) + Send>)>,
     /// The list of handles of each block in the execution graph.
     start_handles: Vec<(Coord, StartHandle)>,
@@ -93,12 +95,63 @@ impl Scheduler {
             prev_blocks: Default::default(),
             block_info: Default::default(),
             block_init: Default::default(),
+            async_block_init: Default::default(),
             start_handles: Default::default(),
             network: NetworkTopology::new(config.clone()),
             config,
             block_structure_sender: sender,
             block_structure_receiver: receiver,
         }
+    }
+
+    /// Register a new block inside the scheduler.
+    ///
+    /// This spawns a worker for each replica of the block in the execution graph and saves its
+    /// start handle. The handle will be later used to actually start the worker when the
+    /// computation is asked to begin.
+    pub(crate) fn add_async_block<Out: Data, OperatorChain>(
+        &mut self,
+        block: InnerBlock<Out, OperatorChain>,
+    ) where
+        OperatorChain: Operator<Out> + futures::Stream<Item=StreamElement<Out>> + 'static,
+    {
+        let block_id = block.id;
+        let info = self.block_info(&block);
+        info!(
+            "Adding new block id={}: {}",
+            block_id,
+            block.to_string(),
+            // info
+        );
+
+        // duplicate the block in the execution graph
+        let mut blocks = vec![];
+        let local_replicas = info.replicas(self.config.host_id.unwrap());
+        blocks.reserve(local_replicas.len());
+        if !local_replicas.is_empty() {
+            let coord = local_replicas[0];
+            blocks.push((coord, block));
+        }
+        // not all blocks can be cloned: clone only when necessary
+        if local_replicas.len() > 1 {
+            for coord in &local_replicas[1..] {
+                blocks.push((*coord, blocks[0].1.clone()));
+            }
+        }
+
+        self.block_info.insert(block_id, info);
+
+        for (coord, block) in blocks {
+            self.async_block_init.push(
+                (coord, Box::new(move |rt, m| spawn_async_worker(rt, block, m)))
+            );
+        }
+
+        // for (coord, block) in blocks {
+        //     // spawn the actual worker
+        //     let start_handle = spawn_worker(block, self.block_structure_sender.clone());
+        //     self.start_handles.push((coord, start_handle));
+        // }
     }
 
     /// Register a new block inside the scheduler.
@@ -173,6 +226,7 @@ impl Scheduler {
 
     /// Start the computation returning the list of handles used to join the workers.
     pub(crate) fn start(mut self, num_blocks: usize) {
+        assert!(self.async_block_init.is_empty());
         info!("Starting scheduler: {:#?}", self.config);
         self.log_topology();
 
@@ -215,30 +269,67 @@ impl Scheduler {
                 job_graph_generator.add_block(coord.block_id, structure);
             }
         });
-                
 
-        // // start the execution
-        // for (coord, handle) in self.start_handles {
-        //     let block_info = &self.block_info[&coord.block_id];
-        //     let replicas = block_info.replicas.values().flatten().cloned().collect();
-        //     let global_id = block_info.global_ids[&coord];
-        //     let metadata = ExecutionMetadata {
-        //         coord,
-        //         replicas,
-        //         global_id,
-        //         prev: network.lock().prev(coord),
-        //         network: network.clone(),
-        //         batch_mode: block_info.batch_mode,
-        //     };
-        //     debug!("Sending metadata to {}", metadata.coord);
-        //     handle.starter.send(metadata).unwrap();
-        //     debug!("Sent.");
-        //     join.push(handle.join_handle);
-        // }
+        network.lock().stop_and_wait();
 
-        // for handle in join {
-        //     handle.recv().unwrap();
-        // }
+
+        let job_graph = job_graph_generator.finalize();
+        debug!("Job graph in dot format:\n{}", job_graph);
+        let profiler_results = wait_profiler();
+
+        Self::log_tracing_data(block_structures, profiler_results);
+    }
+
+    /// Start the computation returning the list of handles used to join the workers.
+    pub(crate) fn start_async(mut self, num_blocks: usize) {
+        self.block_init.iter().for_each(|(c, _)| log::error!("sync block {c}"));
+        assert!(self.block_init.is_empty());
+        info!("Starting scheduler: {:#?}", self.config);
+        self.log_topology();
+
+        assert_eq!(
+            self.block_info.len(),
+            num_blocks,
+            "Some streams do not have a sink attached: {} streams created, but only {} registered",
+            num_blocks,
+            self.block_info.len(),
+        );
+
+        self.build_execution_graph();
+        self.network.finalize_topology();
+        self.network.log_topology();
+
+        let mut join = vec![];
+
+        let network = Arc::new(Mutex::new(self.network));
+
+        let mut job_graph_generator = JobGraphGenerator::new();
+        let mut block_structures = vec![];
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        // start the execution
+        for (coord, init_fn) in self.async_block_init {
+            let block_info = &self.block_info[&coord.block_id];
+            let replicas = block_info.replicas.values().flatten().cloned().collect();
+            let global_id = block_info.global_ids[&coord];
+            let metadata = ExecutionMetadata {
+                coord,
+                replicas,
+                global_id,
+                prev: network.lock().prev(coord),
+                network: network.clone(),
+                batch_mode: block_info.batch_mode,
+            };
+            let (handle, structure) = init_fn(rt.handle(), metadata);
+            join.push(handle.join_handle);
+            block_structures.push((coord, structure.clone()));
+            job_graph_generator.add_block(coord.block_id, structure);
+        }
+        
         network.lock().stop_and_wait();
 
 

@@ -1,6 +1,9 @@
 use std::cell::RefCell;
 use std::pin::Pin;
 
+use futures::{Stream, StreamExt, ready};
+use tokio::runtime::Handle;
+
 use crate::block::{BlockStructure, InnerBlock};
 use crate::channel::{BoundedChannelReceiver, BoundedChannelSender, UnboundedChannelSender};
 use crate::network::Coord;
@@ -55,22 +58,19 @@ impl<F: FnOnce()> Drop for CatchPanic<F> {
     }
 }
 
+#[pin_project::pin_project]
 struct BlockThunkInner<Out, Op>
 where
     Out: Data,
     Op: Operator<Out>,
 {
+    #[pin]
     block: InnerBlock<Out, Op>,
     metadata: ExecutionMetadata,
     tx_end: BoundedChannelSender<()>,
 }
 
-struct BlockThunk<Out, Op>(Box<BlockThunkInner<Out, Op>>)
-where
-    Out: Data,
-    Op: Operator<Out>;
-
-impl<Out, Op> BlockThunk<Out, Op>
+impl<Out, Op> BlockThunkInner<Out, Op>
 where
     Out: Data,
     Op: Operator<Out>,
@@ -80,25 +80,36 @@ where
         metadata: ExecutionMetadata,
         tx_end: BoundedChannelSender<()>,
     ) -> Self {
-        let inner = BlockThunkInner {
+        BlockThunkInner {
             block,
             metadata,
             tx_end,
-        };
-
-        Self(Box::new(inner))
+        }
     }
 
     pub fn next(&mut self) -> StreamElement<Out> {
-        self.0.block.operators.next()
+        self.block.operators.next()
     }
 
     pub fn metadata(&self) -> &ExecutionMetadata {
-        &self.0.metadata
+        &self.metadata
     }
 
-    pub fn end(self) {
-        self.0.tx_end.send(()).unwrap()
+    pub fn end(&self) {
+        self.tx_end.send(()).unwrap()
+    }
+}
+
+
+impl<Out, Op> Stream for BlockThunkInner<Out, Op>
+where
+    Out: Data,
+    Op: Operator<Out> + Stream<Item=StreamElement<Out>>
+{
+    type Item = StreamElement<Out>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        self.project().block.project().operators.poll_next_unpin(cx)
     }
 }
 
@@ -143,50 +154,51 @@ where
         block.to_string(),
     );
 
-    let thunk = BlockThunk::new(block, metadata, tx_end);
+    let thunk = BlockThunkInner::new(block, metadata, tx_end);
 
     s.spawn_fifo(move |s| run(s, thunk));
 
     (StartHandle::new(tx_start, rx_end), structure)
 }
 
-// fn wait_then_run<Out: Data, OperatorChain>(
-//     s: &rayon::ScopeFifo,
-//     mut block: InnerBlock<Out, OperatorChain>,
-//     rx_start: BoundedChannelReceiver<ExecutionMetadata>,
-//     tx_end: BoundedChannelSender<()>,
-//     structure_sender: UnboundedChannelSender<(Coord, BlockStructure)>,
-// ) where
-//     OperatorChain: Operator<Out> + 'static,
-// {
-//     debug!("Waiting for metadata, block {}", block.id);
-//     let metadata = rx_start.recv().unwrap();
-//     drop(rx_start);
+pub(crate) fn spawn_async_worker<Out: Data, OperatorChain>(
+    rt: &Handle,
+    mut block: InnerBlock<Out, OperatorChain>,
+    metadata: ExecutionMetadata,
+) -> (StartHandle, BlockStructure)
+where
+    OperatorChain: Operator<Out> + Stream<Item=StreamElement<Out>> + 'static,
+{
+    let (tx_start, rx_start) = BoundedChannelReceiver::new(0);
+    let (tx_end, rx_end) = BoundedChannelReceiver::new(1);
+    debug!("Creating start handle for block {}", block.id);
 
-//     debug!("Received metadata for {}", metadata.coord);
+    COORD.with(|x| *x.borrow_mut() = Some(metadata.coord));
+    block.operators.setup(metadata.clone());
 
-//     // remember in the thread-local the coordinate of this block
-//     COORD.with(|x| *x.borrow_mut() = Some(metadata.coord));
-//     // notify the operators that we are about to start
-//     block.operators.setup(metadata.clone());
+    let structure = block.operators.structure();
 
-//     debug!("Setup done for {}", metadata.coord);
 
-//     let structure = block.operators.structure();
-//     structure_sender.send((metadata.coord, structure)).unwrap();
-//     drop(structure_sender);
+    info!(
+        "Starting worker for {}: {}",
+        metadata.coord,
+        block.to_string(),
+    );
 
-//     info!(
-//         "Starting worker for {}: {}",
-//         metadata.coord,
-//         block.to_string(),
-//     );
-//     s.spawn_fifo(move |s| run(s, block, metadata, tx_end));
-// }
+    let thunk = BlockThunkInner::new(block, metadata, tx_end);
+
+    let thunk_pinned = Box::pin(thunk);
+
+    rt.spawn(run_async(thunk_pinned));
+
+    // s.spawn_fifo(move |s| run(s, thunk));
+
+    (StartHandle::new(tx_start, rx_end), structure)
+}
 
 fn run<Out: Data, OperatorChain>(
     s: &rayon::ScopeFifo,
-    mut thunk: BlockThunk<Out, OperatorChain>
+    mut thunk: BlockThunkInner<Out, OperatorChain>
 ) where
     OperatorChain: Operator<Out> + 'static,
 {
@@ -210,35 +222,27 @@ fn run<Out: Data, OperatorChain>(
     // catch_panic.defuse();
 }
 
-// fn worker<Out: Data, OperatorChain>(
-//     mut block: InnerBlock<Out, OperatorChain>,
-//     metadata_receiver: BoundedChannelReceiver<ExecutionMetadata>,
-//     structure_sender: UnboundedChannelSender<(Coord, BlockStructure)>,
-// ) where
-//     OperatorChain: Operator<Out> + 'static,
-// {
-//     let metadata = metadata_receiver.recv().unwrap();
-//     drop(metadata_receiver);
-//     info!(
-//         "Starting worker for {}: {}",
-//         metadata.coord,
-//         block.to_string(),
-//     );
-//     // remember in the thread-local the coordinate of this block
-//     COORD.with(|x| *x.borrow_mut() = Some(metadata.coord));
-//     // notify the operators that we are about to start
-//     block.operators.setup(metadata.clone());
+async fn run_async<Out: Data, OperatorChain>(
+    mut thunk: Pin<Box<BlockThunkInner<Out, OperatorChain>>>
+) where
+    OperatorChain: Operator<Out> + Stream<Item=StreamElement<Out>> + 'static,
+{
+    // log::trace!("Running {}", metadata.coord);
+    // let mut catch_panic = CatchPanic::new(move || {
+    //     error!("Worker {} has crashed!", thunk.metadata().coord);
+    // });
 
-//     let structure = block.operators.structure();
-//     structure_sender.send((metadata.coord, structure)).unwrap();
-//     drop(structure_sender);
-
-//     let mut catch_panic = CatchPanic::new(|| {
-//         error!("Worker {} has crashed!", metadata.coord);
-//     });
-//     while !matches!(block.operators.next(), StreamElement::Terminate) {
-//         // nothing to do
-//     }
-//     catch_panic.defuse();
-//     info!("Worker {} completed, exiting", metadata.coord);
-// }
+    while let Some(e) = StreamExt::next(&mut thunk).await {
+        match e {
+            StreamElement::Terminate => {
+                break;
+            }
+            StreamElement::Yield => {
+                panic!("Async operators should never yield. Return Poll::Pending instead!");
+            }
+            _ => {} // Nothing to do
+        }
+    }
+    thunk.end();
+    // catch_panic.defuse();
+}

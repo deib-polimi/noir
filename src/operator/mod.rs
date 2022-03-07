@@ -140,6 +140,29 @@ pub trait Operator<Out: Data>: Clone + Send {
     fn structure(&self) -> BlockStructure;
 }
 
+pub trait AsyncOperator<T>: Operator<T> + futures::Stream<Item=StreamElement<T>>
+where T: Data {}
+
+// impl<T, Out> futures::Stream for T
+// where
+//     T: Operator<Out> + ?Sized,
+//     Out: Data,
+// {
+//     type Item = StreamElement<Out>;
+
+//     fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+//         log::warn!("Using blanket async impl! Dedicated config should be used instead!");
+//         match self.next() {
+//             StreamElement::Item(_) => todo!(),
+//             StreamElement::Timestamped(_, _) => todo!(),
+//             StreamElement::Watermark(_) => todo!(),
+//             StreamElement::FlushBatch => todo!(),
+//             StreamElement::Terminate => todo!(),
+//             StreamElement::Yield => todo!(),
+//         }
+//     }
+// }
+
 impl<Out: Data> StreamElement<Out> {
     /// Create a new `StreamElement` with an `Item(())` if `self` contains an item, otherwise it
     /// returns the same variant of `self`.

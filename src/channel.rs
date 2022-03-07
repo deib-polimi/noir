@@ -3,30 +3,21 @@
 //! This module exists to ease the transition between channel libraries.
 #![allow(dead_code)]
 
+use std::task::Poll;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
-
-#[cfg(all(feature = "crossbeam", not(feature = "flume")))]
-use crossbeam_channel::{
-    bounded, select, unbounded, Receiver, RecvError as ExtRecvError,
-    RecvTimeoutError as ExtRecvTimeoutError, Select, Sender, TryRecvError as ExtTryRecvError,
-    TrySendError as ExtTrySendError,
-};
-#[cfg(all(not(feature = "crossbeam"), feature = "flume"))]
-use flume::{
-    bounded, unbounded, Receiver, RecvError as ExtRecvError,
-    RecvTimeoutError as ExtRecvTimeoutError, Sender, TryRecvError as ExtTryRecvError,
-    TrySendError as ExtTrySendError, SendTimeoutError
-};
+use futures::ready;
+use tokio::sync::mpsc;
+use tokio_util::sync::{PollSender, PollSendError};
 
 pub trait ChannelItem: Send + 'static {}
 impl<T: Send + 'static> ChannelItem for T {}
 
-pub type RecvError = ExtRecvError;
-pub type RecvTimeoutError = ExtRecvTimeoutError;
-pub type TryRecvError = ExtTryRecvError;
-pub type TrySendError<T> = ExtTrySendError<T>;
+pub type SendError<T> = mpsc::error::SendError<T>;
+pub type RecvError = mpsc::error::TryRecvError;
+pub type RecvTimeoutError = mpsc::error::TryRecvError;
+pub type TryRecvError = mpsc::error::TryRecvError;
+pub type TrySendError<T> = mpsc::error::TrySendError<T>;
 
 /// An _either_ type with the result of a select on 2 channels.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -85,25 +76,19 @@ mod select_impl {
 
 /// A wrapper on a bounded channel sender.
 #[derive(Debug, Clone)]
-pub(crate) struct BoundedChannelSender<T: ChannelItem>(Sender<T>);
+pub(crate) struct BoundedChannelSender<T: ChannelItem>(pub PollSender<T>);
 /// A wrapper on a bounded channel receiver.
 #[derive(Debug)]
-pub(crate) struct BoundedChannelReceiver<T: ChannelItem>(Receiver<T>);
+pub(crate) struct BoundedChannelReceiver<T: ChannelItem>(mpsc::Receiver<T>);
 
 impl<T: ChannelItem> BoundedChannelSender<T> {
     /// Send a message in the channel, blocking if it's full.
     #[inline]
-    pub fn send(&self, item: T) -> Result<()> {
+    pub fn send(&self, item: T) -> Result<(), SendError<T>> {
         self.0
             .send(item)
-            .map_err(|_| anyhow!("Error while sending"))
     }
-    /// Send a message in the channel, blocking if it's full.
-    #[inline]
-    pub fn send_timeout(&self, item: T, timeout: Duration) -> Result<(), SendTimeoutError<T>> {
-        self.0.send_timeout(item, timeout)
-    }
-
+    
     #[inline]
     pub fn try_send(&self, item: T) -> Result<(), TrySendError<T>> {
         self.0.try_send(item)
@@ -113,7 +98,7 @@ impl<T: ChannelItem> BoundedChannelSender<T> {
 impl<T: ChannelItem> BoundedChannelReceiver<T> {
     /// Crate a new pair sender/receiver with limited capacity.
     pub fn new(cap: usize) -> (BoundedChannelSender<T>, BoundedChannelReceiver<T>) {
-        let (sender, receiver) = bounded(cap);
+        let (sender, receiver) = mpsc::channel(cap);
         (
             BoundedChannelSender(sender),
             BoundedChannelReceiver(receiver),
@@ -166,25 +151,24 @@ impl<T: ChannelItem> BoundedChannelReceiver<T> {
 
 /// A wrapper on an unbounded channel sender.
 #[derive(Debug, Clone)]
-pub(crate) struct UnboundedChannelSender<T: ChannelItem>(Sender<T>);
+pub(crate) struct UnboundedChannelSender<T: ChannelItem>(mpsc::UnboundedSender<T>);
 /// A wrapper on an unbounded channel receiver.
 #[derive(Debug)]
-pub(crate) struct UnboundedChannelReceiver<T: ChannelItem>(Receiver<T>);
+pub(crate) struct UnboundedChannelReceiver<T: ChannelItem>(mpsc::UnboundedReceiver<T>);
 
 impl<T: ChannelItem> UnboundedChannelSender<T> {
     /// Send a message in the channel.
     #[inline]
-    pub fn send(&self, item: T) -> Result<()> {
+    pub fn send(&self, item: T) -> Result<(), SendError<T>> {
         self.0
             .send(item)
-            .map_err(|_| anyhow!("Error while sending"))
     }
 }
 
 impl<T: ChannelItem> UnboundedChannelReceiver<T> {
     /// Crate a new pair sender/receiver with unlimited capacity.
     pub fn new() -> (UnboundedChannelSender<T>, UnboundedChannelReceiver<T>) {
-        let (sender, receiver) = unbounded();
+        let (sender, receiver) = mpsc::unbounded_channel();
         (
             UnboundedChannelSender(sender),
             UnboundedChannelReceiver(receiver),

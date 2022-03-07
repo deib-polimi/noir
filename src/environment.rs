@@ -103,6 +103,16 @@ impl StreamEnvironment {
         scheduler.start(env.block_count);
     }
 
+    /// Start the computation. Await on the returned future to actually start the computation.
+    pub fn execute_async(self) {
+        drop(self.build_time);
+        let _stopwatch = Stopwatch::new("execution");
+        let mut env = self.inner.lock();
+        info!("Starting execution of {} blocks", env.block_count);
+        let scheduler = env.scheduler.take().unwrap();
+        scheduler.start_async(env.block_count);
+    }
+
     /// Get the total number of processing cores in the cluster.
     pub fn parallelism(&self) -> usize {
         match &self.inner.lock().config.runtime {
@@ -153,7 +163,7 @@ impl StreamEnvironmentInner {
                 panic!("Call `StreamEnvironment::spawn_remote_workers` before calling stream!");
             }
         }
-        let block_id = env.new_block();
+        let block_id = env.new_block_id();
         let source_max_parallelism = source.get_max_parallelism();
         info!(
             "Creating a new stream, block_id={} with max_parallelism {:?}",
@@ -168,7 +178,7 @@ impl StreamEnvironmentInner {
     }
 
     /// Allocate a new BlockId inside the environment.
-    pub(crate) fn new_block(&mut self) -> BlockId {
+    pub(crate) fn new_block_id(&mut self) -> BlockId {
         let new_id = self.block_count;
         self.block_count += 1;
         info!("Creating a new block, id={}", new_id);

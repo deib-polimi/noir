@@ -71,6 +71,7 @@ chrono = "0.4"
 coarsetime = "0.1"
 
 tokio = { version = "1", features = ["sync", "rt"] }
+tokio-util = "0.7"
 futures = "0.3"
 
 parking_lot = "0.12"
@@ -81,6 +82,8 @@ ahash = "0.7"
 rayon = "1.5"
 
 thiserror = "1.0"
+
+pin-project = "*"
 
 [dev-dependencies]
 # for the tests

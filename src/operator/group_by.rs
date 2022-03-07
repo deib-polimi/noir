@@ -4,6 +4,8 @@ use crate::operator::key_by::KeyBy;
 use crate::operator::{DataKey, ExchangeData, Operator};
 use crate::stream::{KeyValue, KeyedStream, Stream};
 
+use super::AsyncOperator;
+
 impl<Out: ExchangeData, OperatorChain> Stream<Out, OperatorChain>
 where
     OperatorChain: Operator<Out> + 'static,
@@ -41,6 +43,26 @@ where
         let new_stream = self
             .add_block(EndBlock::new, next_strategy)
             .add_operator(|prev| KeyBy::new(prev, keyer));
+        KeyedStream(new_stream)
+    }
+
+}
+
+impl<Out: ExchangeData, OperatorChain> Stream<Out, OperatorChain>
+where
+    OperatorChain: AsyncOperator<Out> + 'static,
+{
+    pub fn group_by_async<Key: DataKey, Keyer>(
+        self,
+        keyer: Keyer,
+    ) -> KeyedStream<Key, Out, impl Operator<KeyValue<Key, Out>>>
+    where
+        Keyer: Fn(&Out) -> Key + Send + Clone + 'static,
+    {
+        let next_strategy = NextStrategy::group_by(keyer.clone());
+        let new_stream = self
+            .add_async_block(EndBlock::new, next_strategy)
+            .add_async_operator(|prev| KeyBy::new(prev, keyer));
         KeyedStream(new_stream)
     }
 }

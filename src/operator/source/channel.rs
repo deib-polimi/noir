@@ -1,7 +1,13 @@
-#[cfg(all(feature = "crossbeam", not(feature = "flume")))]
-use crossbeam_channel::{bounded, Receiver, RecvError, Sender, TryRecvError};
-#[cfg(all(feature = "flume", not(feature = "crossbeam")))]
-use flume::{bounded, Receiver, RecvError, Sender, TryRecvError};
+use std::task::Poll;
+
+// #[cfg(all(feature = "crossbeam", not(feature = "flume")))]
+// use crossbeam_channel::{bounded, Receiver, RecvError, Sender, TryRecvError};
+// #[cfg(all(feature = "flume", not(feature = "crossbeam")))]
+// use flume::{bounded, Receiver, RecvError, Sender, TryRecvError};
+
+use futures::ready;
+use tokio::sync::mpsc::*;
+use tokio::sync::mpsc::error::*;
 
 use crate::block::{BlockStructure, OperatorKind, OperatorStructure};
 use crate::operator::source::Source;
@@ -14,12 +20,19 @@ const MAX_RETRY: u8 = 8;
 ///
 /// The iterator will be consumed **only from one replica**, therefore this source is not parallel.
 
+#[derive(Debug, Clone, Copy)]
+enum State {
+    Running,
+    Terminated,
+    Stopped,
+}
+
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct ChannelSource<Out: Data> {
     #[derivative(Debug = "ignore")]
     rx: Receiver<Out>,
-    terminated: bool,
+    state: State,
     retry_count: u8,
 }
 
@@ -43,10 +56,10 @@ impl<Out: Data> ChannelSource<Out> {
     /// tx_channel.send(2);
     /// ```
     pub fn new(channel_size: usize) -> (Sender<Out>, Self) {
-        let (tx, rx) = bounded(channel_size);
+        let (tx, rx) = channel(channel_size);
         let s = Self {
             rx,
-            terminated: false,
+            state: State::Running,
             retry_count: 0,
         };
 
@@ -60,13 +73,43 @@ impl<Out: Data + core::fmt::Debug> Source<Out> for ChannelSource<Out> {
     }
 }
 
+impl<Out: Data + core::fmt::Debug> futures::Stream for ChannelSource<Out> {
+    type Item = StreamElement<Out>;
+
+    fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.state {
+            State::Terminated => {
+                self.state = State::Stopped;
+                return Poll::Ready(Some(StreamElement::Terminate));
+            }
+            State::Stopped => return Poll::Ready(None),
+            State::Running => {}
+        }
+
+        let result = ready!(self.rx.poll_recv(cx)); // TODO: flush
+
+        match result {
+            Some(t) => {
+                Poll::Ready(Some(StreamElement::Item(t)))
+            }
+            None => {
+                self.state = State::Terminated;
+                log::info!("Stream disconnected");
+                Poll::Ready(Some(StreamElement::FlushAndRestart))
+            }
+        }
+    }
+}
+
 impl<Out: Data + core::fmt::Debug> Operator<Out> for ChannelSource<Out> {
     fn setup(&mut self, _metadata: ExecutionMetadata) {}
 
     fn next(&mut self) -> StreamElement<Out> {
-        if self.terminated {
-            return StreamElement::Terminate;
+        match self.state {
+            State::Terminated | State::Stopped => return StreamElement::Terminate,
+            State::Running => {}
         }
+        
         let result = self.rx.try_recv();
 
         match result {
@@ -88,7 +131,7 @@ impl<Out: Data + core::fmt::Debug> Operator<Out> for ChannelSource<Out> {
                 StreamElement::Yield
             }
             Err(TryRecvError::Disconnected) => {
-                self.terminated = true;
+                self.state = State::Terminated;
                 log::info!("Stream disconnected");
                 StreamElement::FlushAndRestart
             }
@@ -96,7 +139,7 @@ impl<Out: Data + core::fmt::Debug> Operator<Out> for ChannelSource<Out> {
     }
 
     fn to_string(&self) -> String {
-        format!("StreamSource<{}>", std::any::type_name::<Out>())
+        format!("ChannelSource<{}>", std::any::type_name::<Out>())
     }
 
     fn structure(&self) -> BlockStructure {

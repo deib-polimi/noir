@@ -1,10 +1,16 @@
 use std::marker::PhantomData;
+use std::task::Poll;
+
+use futures::{ready, StreamExt};
 
 use crate::block::{BlockStructure, OperatorStructure};
 use crate::operator::{Data, DataKey, Operator, StreamElement};
 use crate::scheduler::ExecutionMetadata;
 use crate::stream::{KeyValue, KeyedStream, Stream};
 
+use super::AsyncOperator;
+
+#[pin_project::pin_project]
 #[derive(Clone, Derivative)]
 #[derivative(Debug)]
 pub struct Map<Out: Data, NewOut: Data, F, PreviousOperators>
@@ -12,6 +18,7 @@ where
     F: Fn(Out) -> NewOut + Send + Clone,
     PreviousOperators: Operator<Out>,
 {
+    #[pin]
     prev: PreviousOperators,
     #[derivative(Debug = "ignore")]
     f: F,
@@ -61,6 +68,22 @@ where
         self.prev
             .structure()
             .add_operator(OperatorStructure::new::<NewOut, _>("Map"))
+    }
+}
+
+
+impl<Out: Data, NewOut: Data, F, PreviousOperators> futures::Stream
+    for Map<Out, NewOut, F, PreviousOperators>
+where
+    F: Fn(Out) -> NewOut + Send + Clone,
+    PreviousOperators: AsyncOperator<Out> + Unpin,
+{
+    type Item = StreamElement<NewOut>;
+
+    fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        let prev = ready!(this.prev.poll_next_unpin(cx));
+        Poll::Ready(prev.map(|e| e.map(this.f)))
     }
 }
 

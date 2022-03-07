@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use coarsetime::Instant;
 
-use crate::channel::TrySendError;
+use tokio::sync::mpsc::error::TrySendError;
 use crate::network::{Coord, NetworkMessage, NetworkSender, SendTimeoutError};
 use crate::operator::{ExchangeData, StreamElement};
 
@@ -69,7 +69,7 @@ impl<Out: ExchangeData> Batcher<Out> {
                 self.last_send = Instant::now();
                 Ok(())
             }
-            Err(TrySendError::Disconnected(msg)) => {
+            Err(TrySendError::Closed(msg)) => {
                 self.pending_msg = Some(msg);
                 Err(FlushError::Disconnected)
             }
@@ -81,20 +81,66 @@ impl<Out: ExchangeData> Batcher<Out> {
     }
 
     #[inline]
-    pub(crate) fn try_send_timeout(&mut self, msg: NetworkMessage<Out>, timeout: Duration) -> Result<(), FlushError> {
+    pub(crate) fn send_async(&mut self, msg: NetworkMessage<Out>, cx: std::task::Context<'_>) -> Result<(), FlushError> {
         assert!(self.pending_msg.is_none());
-        match self.remote_sender.send_timeout(msg, timeout) {
+        match self.remote_sender.send_async(msg) {
             Ok(()) => {
                 self.last_send = Instant::now();
                 Ok(())
             }
-            Err(SendTimeoutError::Disconnected(msg)) => {
+            Err(TrySendError::Closed(msg)) => {
                 self.pending_msg = Some(msg);
                 Err(FlushError::Disconnected)
             }
-            Err(SendTimeoutError::Timeout(msg)) => {
+            Err(TrySendError::Full(msg)) => {
                 self.pending_msg = Some(msg);
                 Err(FlushError::Pending)
+            }
+        }
+    }
+
+    // #[inline]
+    // pub(crate) fn try_send_timeout(&mut self, msg: NetworkMessage<Out>, timeout: Duration) -> Result<(), FlushError> {
+    //     assert!(self.pending_msg.is_none());
+    //     match self.remote_sender.send_timeout(msg, timeout) {
+    //         Ok(()) => {
+    //             self.last_send = Instant::now();
+    //             Ok(())
+    //         }
+    //         Err(SendTimeoutError::Disconnected(msg)) => {
+    //             self.pending_msg = Some(msg);
+    //             Err(FlushError::Disconnected)
+    //         }
+    //         Err(SendTimeoutError::Timeout(msg)) => {
+    //             self.pending_msg = Some(msg);
+    //             Err(FlushError::Pending)
+    //         }
+    //     }
+    // }
+
+    /// Put a message in the batch queue, it won't be sent immediately.
+    pub(crate) fn enqueue_async(&mut self, message: StreamElement<Out>, cx: std::task::Context<'_>) -> Result<(), FlushError> {
+        match self.mode {
+            BatchMode::Adaptive(n, max_delay) => {
+                self.buffer.push(message);
+                let timeout_elapsed = self.last_send.elapsed() > max_delay.into();
+                if self.buffer.len() >= n.get() || timeout_elapsed {
+                    self.try_flush()
+                } else {
+                    Ok(())
+                }
+            }
+            BatchMode::Fixed(n) => {
+                self.buffer.push(message);
+                if self.buffer.len() >= n.get() {
+                    self.try_flush()
+                } else {
+                    Ok(())
+                }
+            }
+            BatchMode::Single => {
+                let message = NetworkMessage::new_single(message, self.coord);
+                self.try_send(message)
             }
         }
     }
@@ -127,7 +173,7 @@ impl<Out: ExchangeData> Batcher<Out> {
     }
 
     /// Flush the internal buffer if it's not empty.
-    pub(crate) fn try_flush(&mut self) -> Result<(), FlushError> {
+    pub(crate) fn flush_async(&mut self) -> Result<(), FlushError> {
         // log::warn!("Requesting flush. pending: {}\tbuf: {}", self.pending_msg.is_some(), self.buffer.len());
         if let Some(msg) = self.pending_msg.take() {
             self.try_send(msg)?;
@@ -144,21 +190,38 @@ impl<Out: ExchangeData> Batcher<Out> {
     }
 
     /// Flush the internal buffer if it's not empty.
-    pub(crate) fn flush_timeout(&mut self, timeout: Duration) -> Result<(), FlushError> {
+    pub(crate) fn try_flush(&mut self) -> Result<(), FlushError> {
         // log::warn!("Requesting flush. pending: {}\tbuf: {}", self.pending_msg.is_some(), self.buffer.len());
         if let Some(msg) = self.pending_msg.take() {
-            self.try_send_timeout(msg, timeout)?;
+            self.try_send(msg)?;
         }
 
         if !self.buffer.is_empty() {
             let mut batch = Vec::with_capacity(self.buffer.capacity());
             std::mem::swap(&mut self.buffer, &mut batch);
             let message = NetworkMessage::new_batch(batch, self.coord);
-            self.try_send_timeout(message, timeout)
+            self.try_send(message)
         } else {
             Ok(())
         }
     }
+
+    // /// Flush the internal buffer if it's not empty.
+    // pub(crate) fn flush_timeout(&mut self, timeout: Duration) -> Result<(), FlushError> {
+    //     // log::warn!("Requesting flush. pending: {}\tbuf: {}", self.pending_msg.is_some(), self.buffer.len());
+    //     if let Some(msg) = self.pending_msg.take() {
+    //         self.try_send_timeout(msg, timeout)?;
+    //     }
+
+    //     if !self.buffer.is_empty() {
+    //         let mut batch = Vec::with_capacity(self.buffer.capacity());
+    //         std::mem::swap(&mut self.buffer, &mut batch);
+    //         let message = NetworkMessage::new_batch(batch, self.coord);
+    //         self.try_send_timeout(message, timeout)
+    //     } else {
+    //         Ok(())
+    //     }
+    // }
 
     /// Tell the batcher that the stream is ended, flush all the remaining messages.
     pub(crate) fn end(self) {
