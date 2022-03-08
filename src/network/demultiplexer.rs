@@ -2,17 +2,17 @@ use std::collections::HashMap;
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::thread::JoinHandle;
 
-use anyhow::anyhow;
-
-use crate::channel::{BoundedChannelSender, UnboundedChannelReceiver, UnboundedChannelSender};
+use crate::channel::{Sender, UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::network::remote::{deserialize, header_size, remote_recv};
 use crate::network::{DemuxCoord, NetworkMessage, ReceiverEndpoint};
 use crate::operator::ExchangeData;
 use crate::profiler::{get_profiler, Profiler};
 
+// TODO: Check blocking calls
+
 /// Channel and its coordinate pointing to a local block.
 type ReceiverEndpointMessageSender<In> =
-    (ReceiverEndpoint, BoundedChannelSender<NetworkMessage<In>>);
+    (ReceiverEndpoint, Sender<NetworkMessage<In>>);
 
 /// Like `NetworkReceiver`, but this should be used in a multiplexed channel (i.e. a remote one).
 ///
@@ -25,7 +25,7 @@ pub(crate) struct DemultiplexingReceiver<In: ExchangeData> {
     /// The coordinate of this demultiplexer.
     coord: DemuxCoord,
     /// Tell the demultiplexer that a new receiver is present,
-    register_receiver: UnboundedChannelSender<DemultiplexerMessage<In>>,
+    rx_endpoints: UnboundedSender<RegistryMessage<In>>,
 }
 
 /// Message sent to the demultiplexer thread.
@@ -34,13 +34,13 @@ pub(crate) struct DemultiplexingReceiver<In: ExchangeData> {
 /// signaling that a new recipient is ready. When a remote multiplexer connects,
 /// `RegisterRemoteClient` is sent with the sender to that thread.
 #[derive(Debug, Clone)]
-enum DemultiplexerMessage<In: ExchangeData> {
+enum RegistryMessage<In: ExchangeData> {
     /// A new local replica has been registered, the demultiplexer will inform all the deserializing
     /// threads of this new `ReceiverEndpoint`.
-    RegisterReceiverEndpoint(ReceiverEndpointMessageSender<In>),
+    RegisterEndpoint(ReceiverEndpointMessageSender<In>),
     /// A new remote client has been connected, the demultiplexer will send all the registered
     /// replicas and all the replicas that will register from now on.
-    RegisterRemoteClient(UnboundedChannelSender<ReceiverEndpointMessageSender<In>>),
+    RegisterRemoteClient(UnboundedSender<ReceiverEndpointMessageSender<In>>),
 }
 
 impl<In: ExchangeData> DemultiplexingReceiver<In> {
@@ -55,7 +55,7 @@ impl<In: ExchangeData> DemultiplexingReceiver<In> {
         address: (String, u16),
         num_clients: usize,
     ) -> (Self, JoinHandle<()>) {
-        let (demux_sender, demux_receiver) = UnboundedChannelReceiver::new();
+        let (demux_sender, demux_receiver) = unbounded_channel();
         let register_receiver = demux_sender.clone();
         let join_handle = std::thread::Builder::new()
             .name(format!("Net{}", coord))
@@ -66,7 +66,7 @@ impl<In: ExchangeData> DemultiplexingReceiver<In> {
         (
             Self {
                 coord,
-                register_receiver,
+                rx_endpoints: register_receiver,
             },
             join_handle,
         )
@@ -76,26 +76,26 @@ impl<In: ExchangeData> DemultiplexingReceiver<In> {
     pub fn register(
         &mut self,
         receiver_endpoint: ReceiverEndpoint,
-        local_sender: BoundedChannelSender<NetworkMessage<In>>,
+        local_sender: Sender<NetworkMessage<In>>,
     ) {
         debug!(
             "Registering {} to the demultiplexer of {}",
             receiver_endpoint, self.coord
         );
-        self.register_receiver
-            .send(DemultiplexerMessage::RegisterReceiverEndpoint((
+        self.rx_endpoints
+            .send(RegistryMessage::RegisterEndpoint((
                 receiver_endpoint,
                 local_sender,
             )))
-            .unwrap();
+            .unwrap_or_else(|e| panic!("Register received for {:?} failed", self.coord))
     }
 
     /// Bind the socket of this demultiplexer.
     fn bind_remote(
         coord: DemuxCoord,
         address: (String, u16),
-        demux_sender: UnboundedChannelSender<DemultiplexerMessage<In>>,
-        demux_receiver: UnboundedChannelReceiver<DemultiplexerMessage<In>>,
+        registry_sender: UnboundedSender<RegistryMessage<In>>,
+        demux_receiver: UnboundedReceiver<RegistryMessage<In>>,
         num_clients: usize,
     ) {
         let address = (address.0.as_ref(), address.1);
@@ -105,15 +105,14 @@ impl<In: ExchangeData> DemultiplexingReceiver<In> {
             .unwrap()
             .collect();
         let listener = TcpListener::bind(&*address)
-            .map_err(|e| {
-                anyhow!(
+            .unwrap_or_else(|e| {
+                panic!(
                     "Failed to bind socket for {} at {:?}: {:?}",
                     coord,
                     address,
                     e
                 )
-            })
-            .unwrap();
+            });
         let address = listener
             .local_addr()
             .map(|a| a.to_string())
@@ -126,7 +125,7 @@ impl<In: ExchangeData> DemultiplexingReceiver<In> {
         // spawn an extra thread that keeps track of the connected clients and registered receivers
         let join_handle = std::thread::Builder::new()
             .name(format!("{}", coord))
-            .spawn(move || Self::demultiplexer_thread(coord, demux_receiver))
+            .spawn(move || Self::registry_thread(coord, demux_receiver))
             .unwrap();
 
         // the list of JoinHandle of all the spawned threads, including the demultiplexer one
@@ -135,32 +134,32 @@ impl<In: ExchangeData> DemultiplexingReceiver<In> {
         let mut incoming = listener.incoming();
         let mut connected_clients = 0;
         while connected_clients < num_clients {
-            let stream = incoming.next().unwrap();
-            let stream = match stream {
-                Ok(stream) => stream,
+            let tcp_stream = incoming.next().unwrap();
+            let tcp_stream = match tcp_stream {
+                Ok(s) => s,
                 Err(e) => {
                     warn!("Failed to accept incoming connection at {}: {:?}", coord, e);
                     continue;
                 }
             };
             connected_clients += 1;
-            let peer_addr = stream.peer_addr().unwrap();
+            let peer_addr = tcp_stream.peer_addr().unwrap();
             info!(
                 "Remote receiver at {} accepted a new connection from {} ({} / {})",
                 coord, peer_addr, connected_clients, num_clients
             );
 
-            let (register_receiver_sender, register_receiver_receiver) =
-                UnboundedChannelReceiver::new();
-            demux_sender
-                .send(DemultiplexerMessage::RegisterRemoteClient(
-                    register_receiver_sender,
+            let (client_tx_endpoints, client_rx_endpoints) =
+                unbounded_channel();
+            registry_sender
+                .send(RegistryMessage::RegisterRemoteClient(
+                    client_tx_endpoints,
                 ))
-                .unwrap();
+                .unwrap_or_else(|e| panic!("Demux sender for {:?} channel failed", coord));
             let join_handle = std::thread::Builder::new()
-                .name(format!("Client{}", coord))
+                .name(format!("Demux{}", coord))
                 .spawn(move || {
-                    Self::handle_remote_client(coord, register_receiver_receiver, stream)
+                    Self::demux_thread(coord, client_rx_endpoints, tcp_stream)
                 })
                 .unwrap();
             join_handles.push(join_handle);
@@ -170,7 +169,7 @@ impl<In: ExchangeData> DemultiplexingReceiver<In> {
             coord
         );
         // make sure the demultiplexer thread can exit
-        drop(demux_sender);
+        drop(registry_sender);
         for handle in join_handles {
             handle.join().unwrap();
         }
@@ -179,24 +178,24 @@ impl<In: ExchangeData> DemultiplexingReceiver<In> {
 
     /// The body of the thread that will broadcast the sender of the local replicas to all the
     /// deserializing threads.
-    fn demultiplexer_thread(
+    fn registry_thread(
         coord: DemuxCoord,
-        receiver: UnboundedChannelReceiver<DemultiplexerMessage<In>>,
+        receiver: UnboundedReceiver<RegistryMessage<In>>,
     ) {
-        debug!("Starting demultiplexer for {}", coord);
+        debug!("Starting demultiplex registry for {}", coord);
         let mut known_receivers: Vec<ReceiverEndpointMessageSender<In>> = Vec::new();
         let mut clients = Vec::new();
-        while let Ok(message) = receiver.recv() {
+        while let Some(message) = receiver.blocking_recv() {
             match message {
-                DemultiplexerMessage::RegisterRemoteClient(client) => {
+                RegistryMessage::RegisterRemoteClient(client) => {
                     for recv in &known_receivers {
-                        client.send(recv.clone()).unwrap();
+                        client.send(recv.clone()).unwrap_or_else(|e| panic!("Receiver for {:?} channel failed", e.0.0));
                     }
                     clients.push(client);
                 }
-                DemultiplexerMessage::RegisterReceiverEndpoint(recv) => {
+                RegistryMessage::RegisterEndpoint(recv) => {
                     for client in &clients {
-                        client.send(recv.clone()).unwrap();
+                        client.send(recv.clone()).unwrap_or_else(|e| panic!("Receiver for {:?} channel failed", e.0.0));
                     }
                     known_receivers.push(recv);
                 }
@@ -208,11 +207,11 @@ impl<In: ExchangeData> DemultiplexingReceiver<In> {
     ///
     /// Will deserialize the message upon arrival and send to the corresponding recipient the
     /// deserialized data. If the recipient is not yet known, it is waited until it registers.
-    fn handle_remote_client(
+    fn demux_thread(
         coord: DemuxCoord,
-        register_receiver: UnboundedChannelReceiver<(
+        rx_endpoints: UnboundedReceiver<(
             ReceiverEndpoint,
-            BoundedChannelSender<NetworkMessage<In>>,
+            Sender<NetworkMessage<In>>,
         )>,
         mut receiver: TcpStream,
     ) {
@@ -226,14 +225,14 @@ impl<In: ExchangeData> DemultiplexingReceiver<In> {
             // a message arrived to a not-yet-registered local receiver, wait for the missing
             // receiver
             while !known_receivers.contains_key(&dest) {
-                let (dest, sender) = register_receiver.recv().unwrap();
+                let (dest, sender) = rx_endpoints.blocking_recv().unwrap();
                 known_receivers.insert(dest, sender);
             }
             let message_len = message.len();
             let message = deserialize::<NetworkMessage<In>>(message).unwrap();
             get_profiler().net_bytes_in(message.sender, dest.coord, header_size() + message_len);
-            if let Err(e) = known_receivers[&dest].send(message) {
-                warn!("Failed to send message to {}: {:?}", dest, e);
+            if let Err(e) = known_receivers[&dest].blocking_send(message) {
+                warn!("Failed to send message to {}, channel disconnected", dest);
             }
         }
 

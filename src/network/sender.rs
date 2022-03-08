@@ -1,8 +1,10 @@
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use tokio::sync::mpsc::*;
-use tokio::sync::mpsc;
+use futures::{Sink, SinkExt};
 
+use crate::channel::{PollSender, Sender};
 use crate::network::multiplexer::MultiplexingSender;
 use crate::network::{NetworkMessage, ReceiverEndpoint};
 use crate::operator::ExchangeData;
@@ -28,7 +30,7 @@ pub(crate) struct NetworkSender<Out: ExchangeData> {
 #[derive(Clone)]
 pub(crate) enum NetworkSenderImpl<Out: ExchangeData> {
     /// The channel is local, use an in-memory channel.
-    Local(Sender<NetworkMessage<Out>>),
+    Local(PollSender<NetworkMessage<Out>>),
     /// The channel is remote, use the multiplexer.
     Remote(MultiplexingSender<Out>),
 }
@@ -41,7 +43,7 @@ impl<Out: ExchangeData> NetworkSender<Out> {
     ) -> Self {
         Self {
             receiver_endpoint,
-            sender: NetworkSenderImpl::Local(sender),
+            sender: NetworkSenderImpl::Local(PollSender::new(sender)),
         }
     }
 
@@ -53,49 +55,8 @@ impl<Out: ExchangeData> NetworkSender<Out> {
         }
     }
 
-    /// Send a message to a replica.
-    pub fn send(&self, message: NetworkMessage<Out>) -> Result<(), SendError<NetworkMessage<Out>>> {
-        get_profiler().items_out(
-            message.sender,
-            self.receiver_endpoint.coord,
-            message.num_items(),
-        );
-        match &self.sender {
-            NetworkSenderImpl::Local(sender) => sender.blocking_send(message).map_err(SendError::from),
-            NetworkSenderImpl::Remote(sender) => sender.send(self.receiver_endpoint, message).map_err(|e| SendError::Disconnected(e.0.1)),
-        }
-    }
-
-    /// Send a message to a replica.
-    pub fn poll_send(&self, message: NetworkMessage<Out>, cx: std::task::Context<'_>) -> Result<(), SendError<NetworkMessage<Out>>> {
-        get_profiler().items_out(
-            message.sender,
-            self.receiver_endpoint.coord,
-            message.num_items(),
-        );
-        match &self.sender {
-            NetworkSenderImpl::Local(sender) => sender.blocking_send(message).map_err(SendError::from),
-            NetworkSenderImpl::Remote(sender) => sender.send(self.receiver_endpoint, message).map_err(|e| SendError::Disconnected(e.0.1)),
-        }
-    }
-    /// Send a message to a replica.
-    pub fn try_send(
-        &self,
-        message: NetworkMessage<Out>,
-    ) -> Result<(), mpsc::error::TrySendError<NetworkMessage<Out>>> {
-        get_profiler().items_out(
-            message.sender,
-            self.receiver_endpoint.coord,
-            message.num_items(),
-        );
-        match &self.sender {
-            NetworkSenderImpl::Local(sender) => sender.try_send(message),
-            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
-        }
-    }
-
     /// Get the inner sender if the channel is local.
-    pub fn inner(&self) -> Option<&Sender<NetworkMessage<Out>>> {
+    pub fn inner(&self) -> Option<&PollSender<NetworkMessage<Out>>> {
         match &self.sender {
             NetworkSenderImpl::Local(inner) => Some(inner),
             NetworkSenderImpl::Remote(_) => None,
@@ -103,54 +64,40 @@ impl<Out: ExchangeData> NetworkSender<Out> {
     }
 }
 
-#[derive(thiserror::Error)]
-pub enum SendError<T> {
-    #[error("The channel has disconnected")]
-    Disconnected(T)
-}
+impl<T: ExchangeData> Sink<NetworkMessage<T>> for NetworkSender<T> {
+    type Error = tokio_util::sync::PollSendError<NetworkMessage<T>>;
 
-impl<T> std::fmt::Debug for SendError<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Disconnected(arg0) => f.write_str("Disconnected"),
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match &self.sender {
+            NetworkSenderImpl::Local(sender) => sender.poll_ready_unpin(cx),
+            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
+        }
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: NetworkMessage<T>) -> Result<(), Self::Error> {
+        match &self.sender {
+            NetworkSenderImpl::Local(sender) => sender.start_send_unpin(item),
+            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match &self.sender {
+            NetworkSenderImpl::Local(sender) => sender.poll_flush_unpin(cx),
+            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
+        }
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match &self.sender {
+            NetworkSenderImpl::Local(sender) => sender.poll_close_unpin(cx),
+            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
         }
     }
 }
 
-impl<T> From<mpsc::error::SendError<T>> for SendError<T> {
-    fn from(e: mpsc::error::SendError<T>) -> Self {
-        Self::Disconnected(e.0)
-    }
-}
-
-impl<T> From<crate::channel::SendError<T>> for SendError<T> {
-    fn from(e: crate::channel::SendError<T>) -> Self {
-        Self::Disconnected(e.0)
-    }
-} 
-
-#[derive(thiserror::Error)]
-pub enum SendTimeoutError<T> {
-    #[error("Timed out")]
-    Timeout(T),
-    #[error("Remote disconnected")]
-    Disconnected(T),
-}
-
-impl<T> std::fmt::Debug for SendTimeoutError<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Timeout(arg0) => f.write_str("Channel timed out"),
-            Self::Disconnected(arg0) => f.write_str("Disconnected"),
-        }
-    }
-}
-
-impl<T> From<flume::SendTimeoutError<T>> for SendTimeoutError<T> {
-    fn from(e: flume::SendTimeoutError<T>) -> Self {
-        match e {
-            flume::SendTimeoutError::Timeout(a) => Self::Timeout(a),
-            flume::SendTimeoutError::Disconnected(a) => Self::Disconnected(a),
-        }
-    }
-}
+// #[derive(thiserror::Error)]
+// pub enum PollSendError<T> {
+//     #[error("The channel has disconnected")]
+//     Disconnected(T)
+// }

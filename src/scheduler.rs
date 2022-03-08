@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use itertools::Itertools;
 
-use crate::block::{wait_structure, BatchMode, BlockStructure, InnerBlock, JobGraphGenerator};
+use crate::block::{BatchMode, BlockStructure, InnerBlock, JobGraphGenerator};
 use crate::channel::{
-    BoundedChannelReceiver, BoundedChannelSender, UnboundedChannelReceiver, UnboundedChannelSender,
+    Receiver, Sender, UnboundedReceiver, UnboundedSender,
 };
 use crate::config::{EnvironmentConfig, ExecutionRuntime, LocalRuntimeConfig, RemoteRuntimeConfig};
 use crate::network::{Coord, NetworkTopology};
@@ -40,11 +40,9 @@ pub struct ExecutionMetadata {
 }
 
 /// Handle that the scheduler uses to start the computation of a block.
-pub(crate) struct StartHandle {
-    /// Sender for the `ExecutionMetadata` sent to the worker.
-    starter: BoundedChannelSender<ExecutionMetadata>,
+pub(crate) struct CompletionHandle {
     /// `JoinHandle` used to wait until a block has finished working.
-    join_handle: BoundedChannelReceiver<()>,
+    join_handle: Receiver<()>,
 }
 
 /// Information about a block in the job graph.
@@ -74,22 +72,17 @@ pub(crate) struct Scheduler {
     /// Information about the blocks known to the scheduler.
     block_info: HashMap<BlockId, SchedulerBlockInfo, ahash::RandomState>,
 
-    async_block_init: Vec<(Coord, Box<dyn FnOnce(&tokio::runtime::Handle, ExecutionMetadata) -> (StartHandle, BlockStructure) + Send>)>,
+    async_block_init: Vec<(Coord, Box<dyn FnOnce(&tokio::runtime::Handle, ExecutionMetadata) -> (CompletionHandle, BlockStructure) + Send>)>,
     
-    block_init: Vec<(Coord, Box<dyn FnOnce(&rayon::ScopeFifo, ExecutionMetadata) -> (StartHandle, BlockStructure) + Send>)>,
+    block_init: Vec<(Coord, Box<dyn FnOnce(&rayon::ScopeFifo, ExecutionMetadata) -> (CompletionHandle, BlockStructure) + Send>)>,
     /// The list of handles of each block in the execution graph.
-    start_handles: Vec<(Coord, StartHandle)>,
+    start_handles: Vec<(Coord, CompletionHandle)>,
     /// The network topology that keeps track of all the connections inside the execution graph.
     network: NetworkTopology,
-    /// Receiver with the structure of the block sent by a worker.  
-    block_structure_receiver: UnboundedChannelReceiver<(Coord, BlockStructure)>,
-    /// Sender to give to a worker for sending back the block structure.
-    block_structure_sender: UnboundedChannelSender<(Coord, BlockStructure)>,
 }
 
 impl Scheduler {
     pub fn new(config: EnvironmentConfig) -> Self {
-        let (sender, receiver) = UnboundedChannelReceiver::new();
         Self {
             next_blocks: Default::default(),
             prev_blocks: Default::default(),
@@ -99,8 +92,6 @@ impl Scheduler {
             start_handles: Default::default(),
             network: NetworkTopology::new(config.clone()),
             config,
-            block_structure_sender: sender,
-            block_structure_receiver: receiver,
         }
     }
 
@@ -505,13 +496,11 @@ impl Scheduler {
     }
 }
 
-impl StartHandle {
+impl CompletionHandle {
     pub(crate) fn new(
-        starter: BoundedChannelSender<ExecutionMetadata>,
-        join_handle: BoundedChannelReceiver<()>,
+        join_handle: Receiver<()>,
     ) -> Self {
         Self {
-            starter,
             join_handle,
         }
     }

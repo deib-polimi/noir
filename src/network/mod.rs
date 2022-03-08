@@ -2,8 +2,7 @@ use std::fmt::{Debug, Display, Formatter};
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) use receiver::*;
-pub(crate) use sender::*;
+pub(crate) use network_channel::*;
 pub(crate) use topology::*;
 
 use crate::operator::StreamElement;
@@ -12,9 +11,8 @@ use crate::stream::BlockId;
 
 mod demultiplexer;
 mod multiplexer;
-mod receiver;
 mod remote;
-mod sender;
+mod network_channel;
 mod topology;
 
 #[derive(Debug, Clone)]

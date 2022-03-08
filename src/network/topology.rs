@@ -6,15 +6,20 @@ use std::thread::JoinHandle;
 use itertools::Itertools;
 use typemap::{Key, SendMap};
 
+use crate::channel::{Sender, channel};
 use crate::config::{EnvironmentConfig, ExecutionRuntime};
 use crate::network::demultiplexer::DemultiplexingReceiver;
 use crate::network::multiplexer::MultiplexingSender;
 use crate::network::{
-    BlockCoord, Coord, DemuxCoord, NetworkReceiver, NetworkSender, ReceiverEndpoint,
+    BlockCoord, Coord, DemuxCoord, NetworkReceiver, NetworkSender, ReceiverEndpoint, local_channel, remote_channel,
 };
 use crate::operator::ExchangeData;
 use crate::scheduler::HostId;
 use crate::stream::BlockId;
+
+use super::NetworkMessage;
+
+const CHANNEL_CAPACITY: usize = 16;
 
 /// This struct is used to index inside the `typemap` with the `NetworkReceiver`s.
 struct ReceiverKey<In: ExchangeData>(PhantomData<In>);
@@ -237,6 +242,64 @@ impl NetworkTopology {
             .unwrap()
     }
 
+    fn register_demux<T: ExchangeData>(&mut self, receiver_endpoint: ReceiverEndpoint, local_sender: Sender<NetworkMessage<T>>) {
+        let demux_coord = DemuxCoord::from(receiver_endpoint);
+        let demuxes = self
+            .demultiplexers
+            .entry::<DemultiplexingReceiverKey<T>>()
+            .or_insert_with(Default::default);
+        
+        if !demuxes.contains_key(&demux_coord) {
+            // find the set of all the previous blocks that have a MultiplexingSender that
+            // point to this DemultiplexingReceiver.
+            let mut prev = HashSet::new();
+            // FIXME: maybe this can benefit from self.prev
+            for (&(from, typ), to) in &self.next {
+                // local blocks won't use the multiplexer
+                if from.host_id == demux_coord.coord.host_id {
+                    continue;
+                }
+                // ignore channels of the wrong type
+                if typ != TypeId::of::<T>() {
+                    continue;
+                }
+                for &(to, _fragile) in to {
+                    if demux_coord.includes_channel(from, to) {
+                        prev.insert(BlockCoord::from(from));
+                    }
+                }
+            }
+            if !prev.is_empty() {
+                let address = self.demultiplexer_addresses[&demux_coord].clone();
+                let (demux, join_handle) =
+                    DemultiplexingReceiver::new(demux_coord, address, prev.len());
+                self.join_handles.push(join_handle);
+                demuxes.insert(demux_coord, demux);
+            } else {
+                debug!("Demultiplexer of {} is useless since it has no previous remote block, ignoring...", demux_coord);
+            }
+        }
+        if let Some(demux) = demuxes.get_mut(&demux_coord) {
+            demux.register(receiver_endpoint, local_sender)
+        };
+    }
+
+    fn get_or_insert_mux<T: ExchangeData>(&mut self, receiver_endpoint: ReceiverEndpoint) -> MultiplexingSender<T> {
+        let muxers = self
+            .multiplexers
+            .entry::<MultiplexingSenderKey<T>>()
+            .or_insert_with(Default::default);
+        let demux_coord = DemuxCoord::from(receiver_endpoint);
+
+        if !muxers.contains_key(&demux_coord) {
+            let address = self.demultiplexer_addresses[&demux_coord].clone();
+            let (mux, join_handle) = MultiplexingSender::new(demux_coord, address);
+            self.join_handles.push(join_handle);
+            muxers.insert(demux_coord, mux);
+        }
+        muxers[&demux_coord].clone()
+    }
+
     /// Register the channel for the given receiver.
     ///
     /// This will initialize both the sender and the receiver to the receiver. If it's appropriate
@@ -244,95 +307,58 @@ impl NetworkTopology {
     fn register_channel<T: ExchangeData>(&mut self, receiver_endpoint: ReceiverEndpoint) {
         debug!("Registering {}", receiver_endpoint);
         assert!(
-            self.registered_receivers.insert(receiver_endpoint),
+            !self.registered_receivers.contains(&receiver_endpoint),
             "Receiver {} has already been registered",
             receiver_endpoint
         );
+        self.registered_receivers.insert(receiver_endpoint);
+
         let sender_metadata = self
             .senders_metadata
             .get(&receiver_endpoint)
             .unwrap_or_else(|| panic!("Channel for endpoint {} not registered", receiver_endpoint));
 
-        // create the receiver part of the channel
-        let mut receiver = NetworkReceiver::<T>::new(receiver_endpoint);
-        let local_sender = receiver.sender().unwrap();
+        match &self.config.runtime {
+            ExecutionRuntime::Remote(_) => {
+                if sender_metadata.is_remote {
+                    let tx_mux = self.get_or_insert_mux(receiver_endpoint);
 
-        // if the receiver is local and the runtime is remote, register it to the demultiplexer
-        if receiver_endpoint.coord.host_id == self.config.host_id.unwrap() {
-            if let ExecutionRuntime::Remote(_) = &self.config.runtime {
-                let demux_coord = DemuxCoord::from(receiver_endpoint);
-                let demuxes = self
-                    .demultiplexers
-                    .entry::<DemultiplexingReceiverKey<T>>()
-                    .or_insert_with(Default::default);
-                #[allow(clippy::map_entry)]
-                if !demuxes.contains_key(&demux_coord) {
-                    // find the set of all the previous blocks that have a MultiplexingSender that
-                    // point to this DemultiplexingReceiver.
-                    let mut prev = HashSet::new();
-                    // FIXME: maybe this can benefit from self.prev
-                    for (&(from, typ), to) in &self.next {
-                        // local blocks won't use the multiplexer
-                        if from.host_id == demux_coord.coord.host_id {
-                            continue;
-                        }
-                        // ignore channels of the wrong type
-                        if typ != TypeId::of::<T>() {
-                            continue;
-                        }
-                        for &(to, _fragile) in to {
-                            if demux_coord.includes_channel(from, to) {
-                                prev.insert(BlockCoord::from(from));
-                            }
-                        }
+                    let sender = remote_channel(receiver_endpoint, tx_mux);
+
+                    self.senders
+                        .entry::<SenderKey<T>>()
+                        .or_insert_with(Default::default)
+                        .insert(receiver_endpoint, sender);
+                } else {
+                    let (sender, receiver) = local_channel(receiver_endpoint, CHANNEL_CAPACITY);
+
+                    if receiver_endpoint.coord.host_id == self.config.host_id.unwrap() {
+                        self.register_demux(receiver_endpoint, sender.clone_inner().unwrap());
                     }
-                    if !prev.is_empty() {
-                        let address = self.demultiplexer_addresses[&demux_coord].clone();
-                        let (demux, join_handle) =
-                            DemultiplexingReceiver::new(demux_coord, address, prev.len());
-                        self.join_handles.push(join_handle);
-                        demuxes.insert(demux_coord, demux);
-                    } else {
-                        debug!("Demultiplexer of {} is useless since it has no previous remote block, ignoring...", demux_coord);
-                    }
-                }
-                if let Some(demux) = demuxes.get_mut(&demux_coord) {
-                    demux.register(receiver_endpoint, local_sender.inner().unwrap().clone())
+
+                    self.receivers
+                        .entry::<ReceiverKey<T>>()
+                        .or_insert_with(Default::default)
+                        .insert(receiver_endpoint, receiver);
+                    self.senders
+                        .entry::<SenderKey<T>>()
+                        .or_insert_with(Default::default)
+                        .insert(receiver_endpoint, sender);
                 };
             }
-        }
-        self.receivers
-            .entry::<ReceiverKey<T>>()
-            .or_insert_with(Default::default)
-            .insert(receiver_endpoint, receiver);
+            ExecutionRuntime::Local(_) => {
+                let (sender, receiver) = local_channel(receiver_endpoint, CHANNEL_CAPACITY);
 
-        // create the sending part of the channel
-        let sender = if sender_metadata.is_remote {
-            // this channel ends to a remote host: connect it to the multiplexer
-            if let ExecutionRuntime::Remote(_) = &self.config.runtime {
-                let muxers = self
-                    .multiplexers
-                    .entry::<MultiplexingSenderKey<T>>()
-                    .or_insert_with(Default::default);
-                let demux_coord = DemuxCoord::from(receiver_endpoint);
-                #[allow(clippy::map_entry)]
-                if !muxers.contains_key(&demux_coord) {
-                    let address = self.demultiplexer_addresses[&demux_coord].clone();
-                    let (mux, join_handle) = MultiplexingSender::new(demux_coord, address);
-                    self.join_handles.push(join_handle);
-                    muxers.insert(demux_coord, mux);
-                }
-                NetworkSender::remote(receiver_endpoint, muxers[&demux_coord].clone())
-            } else {
-                panic!("Sender is marked as remote, but the runtime is not");
+                self.receivers
+                    .entry::<ReceiverKey<T>>()
+                    .or_insert_with(Default::default)
+                    .insert(receiver_endpoint, receiver);
+                self.senders
+                    .entry::<SenderKey<T>>()
+                    .or_insert_with(Default::default)
+                    .insert(receiver_endpoint, sender);
             }
-        } else {
-            local_sender
-        };
-        self.senders
-            .entry::<SenderKey<T>>()
-            .or_insert_with(Default::default)
-            .insert(receiver_endpoint, sender);
+        }
     }
 
     /// Register the connection between two replicas.

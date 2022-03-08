@@ -4,7 +4,7 @@ use std::time::Duration;
 use coarsetime::Instant;
 
 use tokio::sync::mpsc::error::TrySendError;
-use crate::network::{Coord, NetworkMessage, NetworkSender, SendTimeoutError};
+use crate::network::{Coord, NetworkMessage, NetworkSender};
 use crate::operator::{ExchangeData, StreamElement};
 
 /// Which policy to use for batching the messages before sending them.

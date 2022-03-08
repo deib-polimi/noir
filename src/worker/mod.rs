@@ -8,7 +8,7 @@ use crate::block::{BlockStructure, InnerBlock};
 use crate::channel::{BoundedChannelReceiver, BoundedChannelSender, UnboundedChannelSender};
 use crate::network::Coord;
 use crate::operator::{Data, Operator, StreamElement};
-use crate::scheduler::{ExecutionMetadata, StartHandle};
+use crate::scheduler::{ExecutionMetadata, CompletionHandle};
 
 thread_local! {
     /// Coordinates of the replica the current worker thread is working on.
@@ -134,7 +134,7 @@ pub(crate) fn spawn_scoped_worker<Out: Data, OperatorChain>(
     s: &rayon::ScopeFifo,
     mut block: InnerBlock<Out, OperatorChain>,
     metadata: ExecutionMetadata,
-) -> (StartHandle, BlockStructure)
+) -> (CompletionHandle, BlockStructure)
 where
     OperatorChain: Operator<Out> + 'static,
 {
@@ -158,14 +158,14 @@ where
 
     s.spawn_fifo(move |s| run(s, thunk));
 
-    (StartHandle::new(tx_start, rx_end), structure)
+    (CompletionHandle::new(tx_start, rx_end), structure)
 }
 
 pub(crate) fn spawn_async_worker<Out: Data, OperatorChain>(
     rt: &Handle,
     mut block: InnerBlock<Out, OperatorChain>,
     metadata: ExecutionMetadata,
-) -> (StartHandle, BlockStructure)
+) -> (CompletionHandle, BlockStructure)
 where
     OperatorChain: Operator<Out> + Stream<Item=StreamElement<Out>> + 'static,
 {
@@ -193,7 +193,7 @@ where
 
     // s.spawn_fifo(move |s| run(s, thunk));
 
-    (StartHandle::new(tx_start, rx_end), structure)
+    (CompletionHandle::new(tx_start, rx_end), structure)
 }
 
 fn run<Out: Data, OperatorChain>(

@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
 
 use crate::block::{JobGraphGenerator, NextStrategy};
-use crate::channel::UnboundedChannelReceiver;
+use crate::channel::UnboundedReceiver;
 use crate::network::Coord;
 use crate::operator::{ExchangeData, KeyerFn};
 use crate::stream::BlockId;
@@ -209,22 +209,6 @@ where
             NextStrategy::All => ConnectionStrategy::All,
         }
     }
-}
-
-/// Wait the structural information from all the replicas and then print the DOT format to the log.
-pub(crate) fn wait_structure(
-    receiver: UnboundedChannelReceiver<(Coord, BlockStructure)>,
-) -> Vec<(Coord, BlockStructure)> {
-    let mut job_graph_generator = JobGraphGenerator::new();
-    let mut structures = vec![];
-    while let Ok((coord, structure)) = receiver.recv() {
-        structures.push((coord, structure.clone()));
-        job_graph_generator.add_block(coord.block_id, structure);
-    }
-    let job_graph = job_graph_generator.finalize();
-    debug!("Job graph in dot format:\n{}", job_graph);
-
-    structures
 }
 
 #[cfg(test)]
