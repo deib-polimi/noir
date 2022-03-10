@@ -178,6 +178,7 @@ where
         Poll::Ready(Some(to_return))
     }
 }
+
 impl<Out: ExchangeData, OperatorChain, IndexFn> Operator<()>
     for EndBlock<Out, OperatorChain, IndexFn>
 where

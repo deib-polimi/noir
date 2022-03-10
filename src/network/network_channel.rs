@@ -3,6 +3,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures::{Sink, SinkExt};
+use nanorand::Rng;
 
 use crate::channel::{channel, Receiver, RecvTimeoutError, SelectResult, Sender, PollSender};
 use crate::network::{NetworkMessage, ReceiverEndpoint};
@@ -27,75 +28,6 @@ pub fn remote_channel<In: ExchangeData>(receiver_endpoint: ReceiverEndpoint, sen
     let sender = NetworkSender::remote(receiver_endpoint, sender);
 
     sender
-}
-
-
-/// The receiving end of a connection between two replicas.
-///
-/// This works for both a local in-memory connection and for a remote socket connection. This will
-/// always be able to listen to a socket. No socket will be bound until a message is sent to the
-/// starter returned by the constructor.
-///
-/// Internally it contains a in-memory sender-receiver pair, to get the local sender call
-/// `.sender()`. When the socket will be bound an task will be spawned, it will bind the
-/// socket and send to the same in-memory channel the received messages.
-#[pin_project::pin_project]
-#[derive(Derivative)]
-#[derivative(Debug)]
-pub(crate) struct NetworkReceiver<In: ExchangeData> {
-    /// The ReceiverEndpoint of the current receiver.
-    pub receiver_endpoint: ReceiverEndpoint,
-    /// The actual receiver where the users of this struct will wait upon.
-    #[derivative(Debug = "ignore")]
-    #[pin]
-    receiver: Receiver<NetworkMessage<In>>,
-}
-
-impl<In: ExchangeData> NetworkReceiver<In> {
-    #[inline]
-    fn profile_message(&self, message: &NetworkMessage<In>) {
-        get_profiler().items_in(
-            message.sender,
-            self.receiver_endpoint.coord,
-            message.num_items(),
-        );
-    }
-
-    pub fn poll_recv(
-        self: Pin<&'_ mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<NetworkMessage<In>>> {
-        match self.project().receiver.poll_recv(cx) {
-            Poll::Ready(Some(msg)) => {
-                self.profile_message(&msg);
-                Poll::Ready(Some(msg))
-            }
-            o => o,
-        }
-    }
-
-    /// Receive a message from any sender of this receiver of the other provided receiver.
-    ///
-    /// The first message of the two is returned. If both receivers are ready one of them is chosen
-    /// randomly (with an unspecified probability). It's guaranteed this function has the eventual
-    /// fairness property.
-    pub fn select<In2: ExchangeData>(
-        &self,
-        other: &NetworkReceiver<In2>,
-    ) -> SelectResult<NetworkMessage<In>, NetworkMessage<In2>> {
-        todo!();
-        // self.receiver.select(&other.receiver)
-    }
-
-    /// Same as `select`, with a timeout.
-    pub fn select_timeout<In2: ExchangeData>(
-        &self,
-        other: &NetworkReceiver<In2>,
-        timeout: Duration,
-    ) -> Result<SelectResult<NetworkMessage<In>, NetworkMessage<In2>>, RecvTimeoutError> {
-        todo!();
-        // self.receiver.select_timeout(&other.receiver, timeout)
-    }
 }
 
 /// The sender part of a connection between two replicas.
@@ -177,6 +109,106 @@ impl<T: ExchangeData> Sink<NetworkMessage<T>> for NetworkSender<T> {
         match &self.sender {
             NetworkSenderImpl::Local(sender) => sender.poll_close_unpin(cx),
             NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
+        }
+    }
+}
+
+
+/// The receiving end of a connection between two replicas.
+///
+/// This works for both a local in-memory connection and for a remote socket connection. This will
+/// always be able to listen to a socket. No socket will be bound until a message is sent to the
+/// starter returned by the constructor.
+///
+/// Internally it contains a in-memory sender-receiver pair, to get the local sender call
+/// `.sender()`. When the socket will be bound an task will be spawned, it will bind the
+/// socket and send to the same in-memory channel the received messages.
+#[pin_project::pin_project]
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub(crate) struct NetworkReceiver<In: ExchangeData> {
+    /// The ReceiverEndpoint of the current receiver.
+    pub receiver_endpoint: ReceiverEndpoint,
+    /// The actual receiver where the users of this struct will wait upon.
+    #[derivative(Debug = "ignore")]
+    #[pin]
+    receiver: Receiver<NetworkMessage<In>>,
+}
+
+impl<Out: ExchangeData> NetworkReceiver<Out> {
+    #[inline]
+    fn profile_message(&self, message: &NetworkMessage<Out>) {
+        get_profiler().items_in(
+            message.sender,
+            self.receiver_endpoint.coord,
+            message.num_items(),
+        );
+    }
+
+    pub fn poll_recv(
+        self: Pin<&'_ mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<NetworkMessage<Out>>> {
+        match self.project().receiver.poll_recv(cx) {
+            Poll::Ready(Some(msg)) => {
+                self.profile_message(&msg);
+                Poll::Ready(Some(msg))
+            }
+            o => o,
+        }
+    }
+
+    pub fn blocking_recv_one(&mut self) -> Option<NetworkMessage<Out>> {
+        log::warn!("RECEIVING FROM BLOCKING START BLOCK, SWITCH TO POLLING IMPL PLS");
+        self.receiver.blocking_recv()
+    }
+
+    /// Receive a message from any sender of this receiver of the other provided receiver.
+    ///
+    /// The first message of the two is returned. If both receivers are ready one of them is chosen
+    /// randomly (with an unspecified probability). It's guaranteed this function has the eventual
+    /// fairness property.
+    pub fn blocking_select<In2: ExchangeData>(
+        &self,
+        other: &NetworkReceiver<In2>,
+    ) -> SelectResult<NetworkMessage<Out>, NetworkMessage<In2>> {
+        log::error!("SELECT RECV FROM BLOCKING START BLOCK, SWITCH TO POLLING IMPL PLS");
+
+        // TODO: uniform rand usages
+        if nanorand::tls_rng().generate_range(0..2u8) > 0 {
+            SelectResult::A(self.blocking_recv_one())
+        } else {
+            SelectResult::B(other.blocking_recv_one())
+        }
+    }
+
+        /// Receive a message from any sender of this receiver of the other provided receiver.
+    ///
+    /// The first message of the two is returned. If both receivers are ready one of them is chosen
+    /// randomly (with an unspecified probability). It's guaranteed this function has the eventual
+    /// fairness property.
+    pub fn poll_select<In2: ExchangeData>(
+        self: Pin<&mut Self>,
+        other: Pin<&mut NetworkReceiver<In2>>,
+        cx: &mut Context<'_>
+    ) -> Poll<SelectResult<NetworkMessage<Out>, NetworkMessage<In2>>> {
+        // TODO: uniform rand usages
+        if nanorand::tls_rng().generate_range(0..2u8) > 0 {
+            if let Poll::Ready(msg) = self.poll_recv(cx) {
+                return Poll::Ready(SelectResult::A(msg));
+            }
+            if let Poll::Ready(msg) = other.poll_recv(cx) {
+                return Poll::Ready(SelectResult::B(msg));
+            }
+            Poll::Pending
+        } else {
+            if let Poll::Ready(msg) = other.poll_recv(cx) {
+                return Poll::Ready(SelectResult::B(msg));
+            }
+            if let Poll::Ready(msg) = self.poll_recv(cx) {
+                return Poll::Ready(SelectResult::A(msg));
+            }
+            Poll::Pending
         }
     }
 }

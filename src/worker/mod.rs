@@ -5,7 +5,7 @@ use futures::{Stream, StreamExt, ready};
 use tokio::runtime::Handle;
 
 use crate::block::{BlockStructure, InnerBlock};
-use crate::channel::{BoundedChannelReceiver, BoundedChannelSender, UnboundedChannelSender};
+use crate::channel::{Sender, Receiver, channel};
 use crate::network::Coord;
 use crate::operator::{Data, Operator, StreamElement};
 use crate::scheduler::{ExecutionMetadata, CompletionHandle};
@@ -67,7 +67,7 @@ where
     #[pin]
     block: InnerBlock<Out, Op>,
     metadata: ExecutionMetadata,
-    tx_end: BoundedChannelSender<()>,
+    tx_end: Sender<()>,
 }
 
 impl<Out, Op> BlockThunkInner<Out, Op>
@@ -78,7 +78,7 @@ where
     pub fn new(
         block: InnerBlock<Out, Op>,
         metadata: ExecutionMetadata,
-        tx_end: BoundedChannelSender<()>,
+        tx_end: Sender<()>,
     ) -> Self {
         BlockThunkInner {
             block,
@@ -96,7 +96,7 @@ where
     }
 
     pub fn end(&self) {
-        self.tx_end.send(()).unwrap()
+        self.tx_end.blocking_send(()).unwrap()
     }
 }
 
@@ -138,8 +138,7 @@ pub(crate) fn spawn_scoped_worker<Out: Data, OperatorChain>(
 where
     OperatorChain: Operator<Out> + 'static,
 {
-    let (tx_start, rx_start) = BoundedChannelReceiver::new(0);
-    let (tx_end, rx_end) = BoundedChannelReceiver::new(1);
+    let (tx_end, rx_end) = channel(1);
     debug!("Creating start handle for block {}", block.id);
 
     COORD.with(|x| *x.borrow_mut() = Some(metadata.coord));
@@ -158,7 +157,7 @@ where
 
     s.spawn_fifo(move |s| run(s, thunk));
 
-    (CompletionHandle::new(tx_start, rx_end), structure)
+    (CompletionHandle::new(rx_end), structure)
 }
 
 pub(crate) fn spawn_async_worker<Out: Data, OperatorChain>(
@@ -169,8 +168,7 @@ pub(crate) fn spawn_async_worker<Out: Data, OperatorChain>(
 where
     OperatorChain: Operator<Out> + Stream<Item=StreamElement<Out>> + 'static,
 {
-    let (tx_start, rx_start) = BoundedChannelReceiver::new(0);
-    let (tx_end, rx_end) = BoundedChannelReceiver::new(1);
+    let (tx_end, rx_end) = channel(1);
     debug!("Creating start handle for block {}", block.id);
 
     COORD.with(|x| *x.borrow_mut() = Some(metadata.coord));
@@ -193,7 +191,7 @@ where
 
     // s.spawn_fifo(move |s| run(s, thunk));
 
-    (CompletionHandle::new(tx_start, rx_end), structure)
+    (CompletionHandle::new(rx_end), structure)
 }
 
 fn run<Out: Data, OperatorChain>(

@@ -1,7 +1,10 @@
 use std::fmt::Debug;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
+use futures::ready;
 pub(crate) use multiple::*;
 pub(crate) use single::*;
 
@@ -33,15 +36,9 @@ pub(crate) trait StartBlockReceiver<Out>: Clone {
     /// `StreamElement::Terminate` message.
     fn cached_replicas(&self) -> usize;
 
-    /// Try to receive a batch from the previous blocks, or fail with an error if the timeout
-    /// expires.
-    fn recv_timeout(&mut self, timeout: Duration) -> Result<NetworkMessage<Out>, RecvTimeoutError>;
+    fn poll_recv(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<NetworkMessage<Out>>>;
 
-    /// Receive a batch from the previous blocks waiting indefinitely.
-    fn recv(&mut self) -> NetworkMessage<Out>;
-
-    /// Try receiving a batch without blocking.
-    fn try_recv(&mut self) -> Result<NetworkMessage<Out>, TryRecvError>;
+    fn blocking_recv_one(&mut self) -> Option<NetworkMessage<Out>>;
 
     /// Like `Operator::structure`.
     fn structure(&self) -> BlockStructure;
@@ -64,12 +61,14 @@ pub(crate) type SingleStartBlockReceiverOperator<Out> =
 /// Following operators will receive the messages in an unspecified order but the watermark property
 /// is followed. Note that the timestamps of the messages are not sorted, it's only guaranteed that
 /// when a watermark is emitted, all the previous messages are already been emitted (in some order).
+#[pin_project::pin_project]
 #[derive(Clone, Debug)]
 pub(crate) struct StartBlock<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> {
     /// Execution metadata of this block.
     metadata: Option<ExecutionMetadata>,
 
     /// The actual receiver able to fetch messages from the network.
+    #[pin]
     receiver: Receiver,
 
     /// Inner iterator over batch items, contains coordinate of the sender
@@ -156,6 +155,95 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> StartBlock<Out
 
     pub(crate) fn receiver(&self) -> &Receiver {
         &self.receiver
+    }
+}
+
+impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Stream
+    for StartBlock<Out, Receiver>
+{
+    type Item = StreamElement<Out>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let metadata = self.metadata.as_ref().unwrap();
+
+        // all the previous blocks sent an end: we're done
+        if self.missing_terminate == 0 {
+            info!("StartBlock for {} has ended", metadata.coord);
+            return Poll::Ready(Some(StreamElement::Terminate));
+        }
+        if self.missing_flush_and_restart == 0 {
+            info!(
+                "StartBlock for {} is emitting flush and restart",
+                metadata.coord
+            );
+
+            self.missing_flush_and_restart = self.num_previous_replicas;
+            self.watermark_frontier.reset();
+            // this iteration has ended, before starting the next one wait for the state update
+            self.wait_for_state = true;
+            self.state_generation += 2;
+            return Poll::Ready(Some(StreamElement::FlushAndRestart));
+        }
+
+        // let max_delay = metadata.batch_mode.max_delay();
+
+        if let Some((sender, ref mut inner)) = self.batch_iter {
+            let msg = match inner.next() {
+                None => {
+                    // Current batch is finished
+                    self.batch_iter = None;
+                    return self.poll_next(cx);
+                }
+                Some(item) => {
+                    match item {
+                        StreamElement::Watermark(ts) => {
+                            // update the frontier and return a watermark if necessary
+                            match self.watermark_frontier.update(sender, ts) {
+                                Some(ts) => StreamElement::Watermark(ts), // ts is safe
+                                None => return self.poll_next(cx),
+                            }
+                        }
+                        StreamElement::FlushAndRestart => {
+                            // mark this replica as ended and let the frontier ignore it from now on
+                            self.watermark_frontier.update(sender, timestamp_max());
+                            self.missing_flush_and_restart -= 1;
+                            return self.poll_next(cx);
+                        }
+                        StreamElement::Terminate => {
+                            self.missing_terminate -= 1;
+                            debug!(
+                                "{} received a Terminate, {} more to come",
+                                metadata.coord, self.missing_terminate
+                            );
+                            return self.poll_next(cx);
+                        }
+                        StreamElement::Yield => {
+                            panic!("Start block received Yield! This should never happen!");
+                        }
+                        _ => item,
+                    }
+                }
+            };
+
+            // the previous iteration has ended, this message refers to the new iteration: we need to be
+            // sure the state is set before we let this message pass
+            if self.wait_for_state {
+                if let Some(lock) = self.state_lock.as_ref() {
+                    lock.wait_for_update(self.state_generation);
+                }
+                self.wait_for_state = false;
+            }
+            return Poll::Ready(Some(msg));
+        }
+
+        match ready!(self.project().receiver.poll_recv(cx)) {
+            Some(net_msg) => {
+                self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
+                self.already_timed_out = false;
+                return self.poll_next(cx);
+            }
+            None => todo!("Handle disconnect start channel"),
+        }
     }
 }
 
@@ -252,37 +340,13 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> Operator<Out>
             return msg;
         }
 
-        let mut cnt = 0;
-        loop {
-            match self.receiver.try_recv() {
-                Ok(net_msg) => {
-                    self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
-                    self.already_timed_out = false;
-                    return self.next();
-                }
-                Err(TryRecvError::Empty) if cnt < 0 => cnt += 1, // TODO: park
-                Err(TryRecvError::Empty) => {
-                    if self.already_timed_out {
-                        match self.receiver.recv_timeout(Duration::from_micros(10)) {
-                            Ok(net_msg) => {
-                                self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
-                                self.already_timed_out = false;
-                                return self.next();
-                            }
-                            Err(RecvTimeoutError::Timeout) => {
-                                log::debug!("Empty input after recv_timeout, yielding {}", self.metadata.as_ref().unwrap().coord);
-                                return StreamElement::Yield
-                            }
-                            Err(RecvTimeoutError::Disconnected) => unimplemented!(),
-                        }
-                    } else {
-                        log::debug!("Empty input, yielding {}", self.metadata.as_ref().unwrap().coord);
-                        self.already_timed_out = true;
-                        return StreamElement::Yield
-                    }
-                }, // TODO: park
-                Err(TryRecvError::Disconnected) => unimplemented!(),
+        match self.receiver.blocking_recv_one() {
+            Some(net_msg) => {
+                self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
+                self.already_timed_out = false;
+                return self.next();
             }
+            None => todo!("Handle disconnect start channel"),
         }
     }
 

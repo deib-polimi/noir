@@ -29,9 +29,9 @@ pub use mpsc::unbounded_channel;
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum SelectResult<In1, In2> {
     /// The result refers to the first selected channel.
-    A(Result<In1, RecvError>),
+    A(Option<In1>),
     /// The result refers to the second selected channel.
-    B(Result<In2, RecvError>),
+    B(Option<In2>),
 }
 
 

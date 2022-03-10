@@ -1,8 +1,8 @@
 use std::any::TypeId;
-use std::time::Duration;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use crate::block::{BlockStructure, OperatorReceiver, OperatorStructure};
-use crate::channel::RecvTimeoutError;
 use crate::network::{Coord, NetworkMessage, NetworkReceiver, ReceiverEndpoint};
 use crate::operator::start::StartBlockReceiver;
 use crate::operator::ExchangeData;
@@ -56,19 +56,14 @@ impl<Out: ExchangeData> StartBlockReceiver<Out> for SingleStartBlockReceiver<Out
         0
     }
 
-    fn recv_timeout(&mut self, timeout: Duration) -> Result<NetworkMessage<Out>, RecvTimeoutError> {
+    fn poll_recv(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<NetworkMessage<Out>>> {
         let receiver = self.receiver.as_mut().unwrap();
-        receiver.recv_timeout(timeout)
+        Pin::new(receiver).poll_recv(cx)
     }
-
-    fn recv(&mut self) -> NetworkMessage<Out> {
+    
+    fn blocking_recv_one(&mut self) -> Option<NetworkMessage<Out>> {
         let receiver = self.receiver.as_mut().unwrap();
-        receiver.recv().expect("Network receiver failed")
-    }
-
-    fn try_recv(&mut self) -> Result<NetworkMessage<Out>, super::TryRecvError> {
-        let receiver = self.receiver.as_mut().unwrap();
-        receiver.try_recv()
+        receiver.blocking_recv_one()
     }
 
     fn structure(&self) -> BlockStructure {

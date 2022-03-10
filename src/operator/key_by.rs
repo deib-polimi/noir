@@ -1,4 +1,8 @@
 use std::marker::PhantomData;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use futures::ready;
 
 use crate::block::{BlockStructure, OperatorStructure};
 use crate::operator::{Data, DataKey};
@@ -6,6 +10,9 @@ use crate::operator::{Operator, StreamElement};
 use crate::scheduler::ExecutionMetadata;
 use crate::stream::{KeyValue, KeyedStream, Stream};
 
+use super::AsyncOperator;
+
+#[pin_project::pin_project]
 #[derive(Clone, Derivative)]
 #[derivative(Debug)]
 pub struct KeyBy<Key: DataKey, Out: Data, Keyer, OperatorChain>
@@ -13,6 +20,7 @@ where
     Keyer: Fn(&Out) -> Key + Send + Clone,
     OperatorChain: Operator<Out>,
 {
+    #[pin]
     prev: OperatorChain,
     #[derivative(Debug = "ignore")]
     keyer: Keyer,
@@ -32,6 +40,32 @@ where
             _key: Default::default(),
             _out: Default::default(),
         }
+    }
+}
+
+
+impl<Key: DataKey, Out: Data, Keyer, OperatorChain> futures::Stream
+    for KeyBy<Key, Out, Keyer, OperatorChain>
+where
+    Keyer: Fn(&Out) -> Key + Send + Clone,
+    OperatorChain: AsyncOperator<Out>,
+{
+    type Item = StreamElement<KeyValue<Key, Out>>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let el = ready!(self.project().prev.poll_next(cx)).unwrap_or_else(|| StreamElement::Terminate);
+        let n = match el {
+            StreamElement::Item(t) => StreamElement::Item(((self.keyer)(&t), t)),
+            StreamElement::Timestamped(t, ts) => {
+                StreamElement::Timestamped(((self.keyer)(&t), t), ts)
+            }
+            StreamElement::Watermark(w) => StreamElement::Watermark(w),
+            StreamElement::Terminate => StreamElement::Terminate,
+            StreamElement::FlushAndRestart => StreamElement::FlushAndRestart,
+            StreamElement::FlushBatch => StreamElement::FlushBatch,
+            StreamElement::Yield => StreamElement::Yield, //TODO: Check
+        };
+        Poll::Ready(Some(n))
     }
 }
 

@@ -143,56 +143,6 @@ where
         }
     }
 
-    pub fn add_async_operator<NewOut: Data, Op, GetOp>(self, get_operator: GetOp) -> Stream<NewOut, Op>
-    where
-        Op: AsyncOperator<NewOut> + 'static,
-        GetOp: FnOnce(OperatorChain) -> Op,
-    {
-        Stream {
-            block: InnerBlock {
-                id: self.block.id,
-                operators: get_operator(self.block.operators),
-                batch_mode: self.block.batch_mode,
-                iteration_state_lock_stack: self.block.iteration_state_lock_stack,
-                is_only_one_strategy: false,
-                scheduler_requirements: self.block.scheduler_requirements,
-                _out_type: Default::default(),
-            },
-            env: self.env,
-        }
-    }
-
-    pub(crate) fn add_async_block<GetEndOp, Op, IndexFn>(
-        self,
-        get_end_operator: GetEndOp,
-        next_strategy: NextStrategy<Out, IndexFn>,
-    ) -> Stream<Out, impl Operator<Out>>
-    where
-        IndexFn: KeyerFn<usize, Out>,
-        Out: ExchangeData,
-        Op: AsyncOperator<()> + 'static,
-        GetEndOp: FnOnce(OperatorChain, NextStrategy<Out, IndexFn>, BatchMode) -> Op,
-    {
-        let batch_mode = self.block.batch_mode;
-        let state_lock = self.block.iteration_state_lock_stack.clone();
-        let mut old_stream =
-            self.add_async_operator(|prev| get_end_operator(prev, next_strategy.clone(), batch_mode));
-        old_stream.block.is_only_one_strategy = matches!(next_strategy, NextStrategy::OnlyOne);
-        let mut env = old_stream.env.lock();
-        let old_id = old_stream.block.id;
-        let new_id = env.new_block_id();
-        let scheduler = env.scheduler_mut();
-        scheduler.add_async_block(old_stream.block);
-        scheduler.connect_blocks(old_id, new_id, TypeId::of::<Out>());
-        drop(env);
-
-        let start_block = StartBlock::single(old_id, state_lock.last().cloned());
-        Stream {
-            block: InnerBlock::new(new_id, start_block, batch_mode, state_lock),
-            env: old_stream.env,
-        }
-    }
-
     /// Add a new block to the stream, closing and registering the previous one. The new block is
     /// connected to the previous one.
     ///
@@ -377,6 +327,63 @@ where
         let mut env = self.env.lock();
         info!("Finalizing block id={}", self.block.id);
         env.scheduler_mut().add_block(self.block);
+    }
+}
+
+
+impl<Out: Data, OperatorChain> Stream<Out, OperatorChain>
+where
+    OperatorChain: AsyncOperator<Out> + 'static,
+{
+
+    pub fn add_async_operator<NewOut: Data, Op, GetOp>(self, get_operator: GetOp) -> Stream<NewOut, Op>
+    where
+        Op: AsyncOperator<NewOut> + 'static,
+        GetOp: FnOnce(OperatorChain) -> Op,
+    {
+        Stream {
+            block: InnerBlock {
+                id: self.block.id,
+                operators: get_operator(self.block.operators),
+                batch_mode: self.block.batch_mode,
+                iteration_state_lock_stack: self.block.iteration_state_lock_stack,
+                is_only_one_strategy: false,
+                scheduler_requirements: self.block.scheduler_requirements,
+                _out_type: Default::default(),
+            },
+            env: self.env,
+        }
+    }
+
+    pub(crate) fn add_async_block<GetEndOp, Op, IndexFn>(
+        self,
+        get_end_operator: GetEndOp,
+        next_strategy: NextStrategy<Out, IndexFn>,
+    ) -> Stream<Out, impl AsyncOperator<Out>>
+    where
+        IndexFn: KeyerFn<usize, Out>,
+        Out: ExchangeData,
+        Op: AsyncOperator<()> + 'static,
+        GetEndOp: FnOnce(OperatorChain, NextStrategy<Out, IndexFn>, BatchMode) -> Op,
+    {
+        let batch_mode = self.block.batch_mode;
+        let state_lock = self.block.iteration_state_lock_stack.clone();
+        let mut old_stream =
+            self.add_async_operator(|prev| get_end_operator(prev, next_strategy.clone(), batch_mode));
+        old_stream.block.is_only_one_strategy = matches!(next_strategy, NextStrategy::OnlyOne);
+        let mut env = old_stream.env.lock();
+        let old_id = old_stream.block.id;
+        let new_id = env.new_block_id();
+        let scheduler = env.scheduler_mut();
+        scheduler.add_async_block(old_stream.block);
+        scheduler.connect_blocks(old_id, new_id, TypeId::of::<Out>());
+        drop(env);
+
+        let start_block = StartBlock::single(old_id, state_lock.last().cloned());
+        Stream {
+            block: InnerBlock::new(new_id, start_block, batch_mode, state_lock),
+            env: old_stream.env,
+        }
     }
 }
 

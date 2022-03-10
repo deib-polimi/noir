@@ -1,14 +1,19 @@
-use std::time::Duration;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
+use futures::ready;
+use nanorand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::block::{BlockStructure, OperatorReceiver, OperatorStructure};
-use crate::channel::{RecvTimeoutError, SelectResult, TryRecvError};
+use crate::channel::SelectResult;
 use crate::network::{Coord, NetworkMessage};
 use crate::operator::start::{SingleStartBlockReceiver, StartBlockReceiver};
 use crate::operator::{Data, ExchangeData, StreamElement};
 use crate::scheduler::ExecutionMetadata;
 use crate::stream::BlockId;
+
+// TODO: check all of this
 
 /// This enum is an _either_ type, it contain either an element from the left part or an element
 /// from the right part.
@@ -28,9 +33,11 @@ pub(crate) enum TwoSidesItem<OutL: Data, OutR: Data> {
 }
 
 /// The actual receiver from one of the two sides.
+#[pin_project::pin_project]
 #[derive(Clone, Debug)]
 struct SideReceiver<Out: ExchangeData, Item: ExchangeData> {
     /// The internal receiver for this side.
+    #[pin]
     receiver: SingleStartBlockReceiver<Out>,
     /// The number of replicas this side has.
     num_replicas: usize,
@@ -69,11 +76,36 @@ impl<Out: ExchangeData, Item: ExchangeData> SideReceiver<Out, Item> {
         self.missing_terminate = self.num_replicas;
     }
 
-    fn recv(&mut self, timeout: Option<Duration>) -> Result<NetworkMessage<Out>, RecvTimeoutError> {
-        if let Some(timeout) = timeout {
-            self.receiver.recv_timeout(timeout)
+    fn poll_recv(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<NetworkMessage<Out>>> {
+        self.project().receiver.poll_recv(cx)
+    }
+    
+    fn blocking_recv_one(&mut self) -> Option<NetworkMessage<Out>> {
+        self.receiver.blocking_recv_one()
+    }
+
+    fn poll_select<Out2: ExchangeData, Item2: ExchangeData>(
+        self: Pin<&mut Self>,
+        other: Pin<&mut SideReceiver<Out2, Item2>>,
+        cx: &mut Context<'_>
+    ) -> Poll<SelectResult<NetworkMessage<Out>, NetworkMessage<Out2>>> {
+        // TODO: uniform rand usages
+        if nanorand::tls_rng().generate_range(0..2u8) > 0 {
+            if let Poll::Ready(msg) = self.poll_recv(cx) {
+                return Poll::Ready(SelectResult::A(msg));
+            }
+            if let Poll::Ready(msg) = other.poll_recv(cx) {
+                return Poll::Ready(SelectResult::B(msg));
+            }
+            Poll::Pending
         } else {
-            Ok(self.receiver.recv())
+            if let Poll::Ready(msg) = other.poll_recv(cx) {
+                return Poll::Ready(SelectResult::B(msg));
+            }
+            if let Poll::Ready(msg) = self.poll_recv(cx) {
+                return Poll::Ready(SelectResult::A(msg));
+            }
+            Poll::Pending
         }
     }
 
@@ -116,13 +148,22 @@ impl<Out: ExchangeData, Item: ExchangeData> SideReceiver<Out, Item> {
     }
 }
 
+enum Side<L, R> {
+    Left(L),
+    Right(R),
+}
+
+
 /// This receiver is able to receive data from two previous blocks.
 ///
 /// To do so it will first select on the two channels, and wrap each element into an enumeration
 /// that discriminates the two sides.
+#[pin_project::pin_project]
 #[derive(Clone, Debug)]
 pub(crate) struct MultipleStartBlockReceiver<OutL: ExchangeData, OutR: ExchangeData> {
+    #[pin]
     left: SideReceiver<OutL, TwoSidesItem<OutL, OutR>>,
+    #[pin]
     right: SideReceiver<OutR, TwoSidesItem<OutL, OutR>>,
     first_message: bool,
 }
@@ -192,10 +233,9 @@ impl<OutL: ExchangeData, OutR: ExchangeData> MultipleStartBlockReceiver<OutL, Ou
     ///
     /// This will access only the needed side (i.e. if one of the sides ended, only the other is
     /// probed). This will try to use the cache if it's available.
-    fn select(
+    fn blocking_select(
         &mut self,
-        timeout: Option<Duration>,
-    ) -> Result<NetworkMessage<TwoSidesItem<OutL, OutR>>, RecvTimeoutError> {
+    ) -> Option<NetworkMessage<TwoSidesItem<OutL, OutR>>> {
         // both sides received all the `StreamElement::Terminate`, but the cached ones have never
         // been emitted
         if self.left.is_terminated() && self.right.is_terminated() {
@@ -207,7 +247,7 @@ impl<OutL: ExchangeData, OutR: ExchangeData> MultipleStartBlockReceiver<OutL, Ou
                 0
             };
             if num_terminates > 0 {
-                return Ok(NetworkMessage::new_batch(
+                return Some(NetworkMessage::new_batch(
                     (0..num_terminates)
                         .map(|_| StreamElement::Terminate)
                         .collect(),
@@ -240,59 +280,149 @@ impl<OutL: ExchangeData, OutR: ExchangeData> MultipleStartBlockReceiver<OutL, Ou
             debug_assert!(!self.right.cached || self.right.cache_full);
             self.first_message = false;
             if self.left.cached {
-                Side::Right(self.right.recv(timeout))
+                Side::Right(self.right.blocking_recv_one())
             } else {
-                Side::Left(self.left.recv(timeout))
+                Side::Left(self.left.blocking_recv_one())
             }
         } else if self.left.cached && self.left.cache_full && !self.left.cache_finished() {
             // The left side is cached, therefore we can access it immediately
-            return Ok(self.left.next_cached_item());
+            return Some(self.left.next_cached_item());
         } else if self.right.cached && self.right.cache_full && !self.right.cache_finished() {
             // The right side is cached, therefore we can access it immediately
-            return Ok(self.right.next_cached_item());
+            return Some(self.right.next_cached_item());
         } else if self.left.is_ended() {
             // There is nothing more to read from the left side (if cached, all the cache has
             // already been read).
-            Side::Right(self.right.recv(timeout))
+            Side::Right(self.right.blocking_recv_one())
         } else if self.right.is_ended() {
             // There is nothing more to read from the right side (if cached, all the cache has
             // already been read).
-            Side::Left(self.left.recv(timeout))
+            Side::Left(self.left.blocking_recv_one())
         } else {
             let left = self.left.receiver.receiver.as_mut().unwrap();
             let right = self.right.receiver.receiver.as_mut().unwrap();
-            let data = if let Some(timeout) = timeout {
-                left.select_timeout(right, timeout)
-            } else {
-                Ok(left.select(right))
-            };
+            let data = left.blocking_select(right);
             match data {
-                Ok(SelectResult::A(left)) => {
-                    Side::Left(left.map_err(|_| RecvTimeoutError::Timeout))
+                SelectResult::A(left) => {
+                    Side::Left(left)
                 }
-                Ok(SelectResult::B(right)) => {
-                    Side::Right(right.map_err(|_| RecvTimeoutError::Timeout))
+                SelectResult::B(right) => {
+                    Side::Right(right)
                 }
-                // timeout
-                Err(e) => Side::Left(Err(e)),
             }
         };
 
         match data {
-            Side::Left(Ok(left)) => Ok(Self::process_side(
+            Side::Left(Some(left)) => Some(Self::process_side(
                 &mut self.left,
                 left,
                 TwoSidesItem::Left,
                 TwoSidesItem::LeftEnd,
             )),
-            Side::Right(Ok(right)) => Ok(Self::process_side(
+            Side::Right(Some(right)) => Some(Self::process_side(
                 &mut self.right,
                 right,
                 TwoSidesItem::Right,
                 TwoSidesItem::RightEnd,
             )),
-            Side::Left(Err(_)) | Side::Right(Err(_)) => Err(RecvTimeoutError::Timeout),
+            Side::Left(None) | Side::Right(None) => None,
         }
+    }
+
+
+    /// Receive from the previous sides the next batch, or fail with a timeout if provided.
+    ///
+    /// This will access only the needed side (i.e. if one of the sides ended, only the other is
+    /// probed). This will try to use the cache if it's available.
+    fn poll_select( // TODO: CHECK
+        self: Pin<&mut Self>, cx: &mut Context<'_>
+    ) -> Poll<Option<NetworkMessage<TwoSidesItem<OutL, OutR>>>> {
+        // both sides received all the `StreamElement::Terminate`, but the cached ones have never
+        // been emitted
+        if self.left.is_terminated() && self.right.is_terminated() {
+            let num_terminates = if self.left.cached {
+                self.left.num_replicas
+            } else if self.right.cached {
+                self.right.num_replicas
+            } else {
+                0
+            };
+            if num_terminates > 0 {
+                return Poll::Ready(Some(NetworkMessage::new_batch(
+                    (0..num_terminates)
+                        .map(|_| StreamElement::Terminate)
+                        .collect(),
+                    Default::default(),
+                )));
+            }
+        }
+
+        // both left and right received all the FlushAndRestart, prepare for the next iteration
+        if self.left.is_ended()
+            && self.right.is_ended()
+            && self.left.cache_finished()
+            && self.right.cache_finished()
+        {
+            self.left.reset();
+            self.right.reset();
+            self.first_message = true;
+        }
+
+        let proj = self.project();
+
+        // First message of this iteration, and there is a side with the cache:
+        // we need to ask to the other side FIRST to know if this is the end of the stream or a new
+        // iteration is about to start.
+        let data = if self.first_message && (self.left.cached || self.right.cached) {
+            debug_assert!(!self.left.cached || self.left.cache_full);
+            debug_assert!(!self.right.cached || self.right.cache_full);
+            self.first_message = false;
+            if self.left.cached {
+                Side::Right(ready!(proj.right.poll_recv(cx)))
+            } else {
+                Side::Left(ready!(proj.left.poll_recv(cx)))
+            }
+        } else if self.left.cached && self.left.cache_full && !self.left.cache_finished() {
+            // The left side is cached, therefore we can access it immediately
+            return Poll::Ready(Some(self.left.next_cached_item()));
+        } else if self.right.cached && self.right.cache_full && !self.right.cache_finished() {
+            // The right side is cached, therefore we can access it immediately
+            return Poll::Ready(Some(self.right.next_cached_item()));
+        } else if self.left.is_ended() {
+            // There is nothing more to read from the left side (if cached, all the cache has
+            // already been read).
+                Side::Right(ready!(proj.right.poll_recv(cx)))
+        } else if self.right.is_ended() {
+            // There is nothing more to read from the right side (if cached, all the cache has
+            // already been read).
+                Side::Left(ready!(proj.left.poll_recv(cx)))
+        } else {
+            let data = proj.left.poll_select(proj.right, cx);
+            match ready!(data) {
+                SelectResult::A(left) => {
+                    Side::Left(left)
+                }
+                SelectResult::B(right) => {
+                    Side::Right(right)
+                }
+            }
+        };
+
+        Poll::Ready(match data {
+            Side::Left(Some(left)) => Some(Self::process_side(
+                &mut self.left,
+                left,
+                TwoSidesItem::Left,
+                TwoSidesItem::LeftEnd,
+            )),
+            Side::Right(Some(right)) => Some(Self::process_side(
+                &mut self.right,
+                right,
+                TwoSidesItem::Right,
+                TwoSidesItem::RightEnd,
+            )),
+            Side::Left(None) | Side::Right(None) => None,
+        })
     }
 }
 
@@ -321,23 +451,6 @@ impl<OutL: ExchangeData, OutR: ExchangeData> StartBlockReceiver<TwoSidesItem<Out
         cached
     }
 
-    fn recv_timeout(
-        &mut self,
-        timeout: Duration,
-    ) -> Result<NetworkMessage<TwoSidesItem<OutL, OutR>>, RecvTimeoutError> {
-        self.select(Some(timeout))
-    }
-
-    fn recv(&mut self) -> NetworkMessage<TwoSidesItem<OutL, OutR>> {
-        self.select(None).expect("receiver failed")
-    }
-
-    fn try_recv(
-        &mut self,
-    ) -> Result<NetworkMessage<TwoSidesItem<OutL, OutR>>, super::TryRecvError> {
-        todo!()
-    }
-
     fn structure(&self) -> BlockStructure {
         let mut operator = OperatorStructure::new::<TwoSidesItem<OutL, OutR>, _>("StartBlock");
         operator.receivers.push(OperatorReceiver::new::<OutL>(
@@ -348,5 +461,13 @@ impl<OutL: ExchangeData, OutR: ExchangeData> StartBlockReceiver<TwoSidesItem<Out
         ));
 
         BlockStructure::default().add_operator(operator)
+    }
+
+    fn poll_recv(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<NetworkMessage<TwoSidesItem<OutL, OutR>>>> {
+        self.poll_select(cx)
+    }
+
+    fn blocking_recv_one(&mut self) -> Option<NetworkMessage<TwoSidesItem<OutL, OutR>>> {
+        self.blocking_select()
     }
 }

@@ -83,7 +83,9 @@ rayon = "1.5"
 
 thiserror = "1.0"
 
-pin-project = "*"
+pin-project = "1.0"
+
+nanorand = "0.7"
 
 [dev-dependencies]
 # for the tests
