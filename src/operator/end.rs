@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::task::Poll;
+use std::pin::Pin;
+use std::task::{Poll, Context};
 use std::time::Duration;
 
 use futures::ready;
@@ -31,11 +32,10 @@ where
     batch_mode: BatchMode,
     sender_groups: Vec<SenderList>,
     #[derivative(Debug = "ignore", Clone(clone_with = "clone_default"))]
-    senders: HashMap<ReceiverEndpoint, Batcher<Out>, ahash::RandomState>,
+    senders: HashMap<ReceiverEndpoint, Batcher<Out>, ahash::RandomState>, // TODO: try to remove the boxes
     feedback_id: Option<BlockId>,
     ignore_block_ids: Vec<BlockId>,
-    must_flush: bool,
-    already_tried_flush: bool,
+    terminating: bool,
 }
 
 impl<Out: ExchangeData, OperatorChain, IndexFn> EndBlock<Out, OperatorChain, IndexFn>
@@ -57,8 +57,7 @@ where
             senders: Default::default(),
             feedback_id: None,
             ignore_block_ids: Default::default(),
-            must_flush: false,
-            already_tried_flush: false,
+            terminating: false,
         }
     }
 
@@ -74,41 +73,19 @@ where
         self.ignore_block_ids.push(block_id);
     }
 
-    fn poll_flush_pending(&mut self, cx: &mut std::task::Context<'_>) -> Poll<()> {
-        if self.must_flush {
-            for (_, sender) in self.senders.iter_mut() {
-                let result = ready!(sender.flush_async(cx));
-
-                match result {
-                    Ok(_) => {}
-                    Err(e) => {
-                        log::debug!("Couldn't flush {} -> {}", self.metadata.as_ref().unwrap().coord, sender.coord());
-                        self.already_tried_flush = true;
-                        return Err(e)
-                    }
-                }
-            }
-            self.must_flush = false
-        } else {
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    pub(crate) fn flush_all(&mut self) -> Result<(), FlushError> {
+    fn poll_all_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), FlushError>> {
         for (_, sender) in self.senders.iter_mut() {
-            let result = sender.try_flush();
+            let result = ready!(Pin::new(sender).poll_ready(cx));
 
             match result {
                 Ok(_) => {}
                 Err(e) => {
                     log::debug!("Couldn't flush {} -> {}", self.metadata.as_ref().unwrap().coord, sender.coord());
-                    self.already_tried_flush = true;
-                    return Err(e)
+                    return Poll::Ready(Err(e))
                 }
             }
         }
-        self.already_tried_flush = false;
-        Ok(())
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -121,27 +98,30 @@ where
     type Item = StreamElement<()>;
 
     fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut this = self.project();
-        if self.must_flush {
-            match self.flush_all() {
-                Ok(()) => self.must_flush = false,
-                Err(e) => {
-                    log::debug!("{} Must and could not flush, yielding", coord!(self));
-                    return StreamElement::Yield;
-                }
+        match self.poll_all_ready(cx) {
+            Poll::Ready(Ok(_)) => {}
+            Poll::Ready(Err(e)) => {
+                panic!("Broken channel {e}"); // TODO: Check
             }
-            return self.next();
+            Poll::Pending => return Poll::Pending,
         }
 
-        let message = self.prev.next();
+        if self.terminating {
+            self.senders.drain();
+        }
+
+        let mut proj = self.project();
+
+        let message = ready!(proj.prev.poll_next(cx));
+
+        let message = message.unwrap_or_else(|| StreamElement::Terminate); // TODO: Change
+
         let to_return = message.take();
+
         match &message {
             StreamElement::Watermark(_)
             | StreamElement::Terminate
             | StreamElement::FlushAndRestart => {
-                if matches!(message, StreamElement::FlushAndRestart) {
-                    self.must_flush = true;
-                }
                 for senders in self.sender_groups.iter() {
                     for &sender in senders.0.iter() {
                         // if this block is the end of the feedback loop it should not forward
@@ -153,10 +133,10 @@ where
                             continue;
                         }
                         let sender = self.senders.get_mut(&sender).unwrap();
-                        match sender.enqueue(message.clone()) {
-                            Ok(()) => {}
-                            Err(FlushError::Pending) => self.must_flush = true, // Mark for yielding
-                            Err(FlushError::Disconnected) => panic!(),
+                        sender.enqueue(message.clone());
+
+                        if matches!(message, StreamElement::FlushAndRestart) {
+                            sender.request_flush();
                         }
                     }
                 }
@@ -165,25 +145,20 @@ where
                 let index = self.next_strategy.index(item);
                 for sender in self.sender_groups.iter() {
                     let index = index % sender.0.len();
-                    match self
-                        .senders
+                    self.senders
                         .get_mut(&sender.0[index])
                         .unwrap()
                         .enqueue(message.clone())
-                    {
-                        Ok(()) => {}
-                        Err(FlushError::Pending) => self.must_flush = true, // Mark for yielding
-                        Err(FlushError::Disconnected) => panic!(),
-                    }
                 }
             }
             StreamElement::Yield => {
-                log::debug!("{} Received Yield from downstream, marking for flush", coord!(self));
-                self.must_flush = true;
+                log::error!("{} Received Yield from downstream", coord!(self));
             }
             StreamElement::FlushBatch => {
                 log::debug!("{} Received FlushBatch from downstream, marking for flush", coord!(self));
-                self.must_flush = true;
+                for sender in self.senders.values() {
+                    sender.request_flush();
+                }
             }
         };
 
@@ -194,22 +169,13 @@ where
                 metadata.coord,
                 self.senders.len()
             );
-            for (_, batcher) in self.senders.drain() {
-                batcher.end();
+            for sender in self.senders.values() {
+                sender.request_flush();
             }
-            self.must_flush = false;
+            self.terminating = true;
         }
 
-        if self.must_flush {
-            log::debug!("{} Flushing and yielding", coord!(self));
-            match self.flush_all() {
-                Ok(()) => {}
-                Err(e) => self.must_flush = true,
-            }
-            return StreamElement::Yield;
-        }
-
-        to_return
+        Poll::Ready(Some(to_return))
     }
 }
 impl<Out: ExchangeData, OperatorChain, IndexFn> Operator<()>
@@ -239,17 +205,6 @@ where
     }
 
     fn next(&mut self) -> StreamElement<()> {
-        if self.must_flush {
-            match self.flush_all() {
-                Ok(()) => self.must_flush = false,
-                Err(e) => {
-                    log::debug!("{} Must and could not flush, yielding", coord!(self));
-                    return StreamElement::Yield;
-                }
-            }
-            return self.next();
-        }
-
         let message = self.prev.next();
         let to_return = message.take();
         match &message {
@@ -257,7 +212,6 @@ where
             | StreamElement::Terminate
             | StreamElement::FlushAndRestart => {
                 if matches!(message, StreamElement::FlushAndRestart) {
-                    self.must_flush = true;
                 }
                 for senders in self.sender_groups.iter() {
                     for &sender in senders.0.iter() {
@@ -270,9 +224,8 @@ where
                             continue;
                         }
                         let sender = self.senders.get_mut(&sender).unwrap();
-                        match sender.enqueue(message.clone()) {
+                        match sender.blocking_send_one(message.clone()) {
                             Ok(()) => {}
-                            Err(FlushError::Pending) => self.must_flush = true, // Mark for yielding
                             Err(FlushError::Disconnected) => panic!(),
                         }
                     }
@@ -286,21 +239,18 @@ where
                         .senders
                         .get_mut(&sender.0[index])
                         .unwrap()
-                        .enqueue(message.clone())
+                        .blocking_send_one(message.clone())
                     {
                         Ok(()) => {}
-                        Err(FlushError::Pending) => self.must_flush = true, // Mark for yielding
                         Err(FlushError::Disconnected) => panic!(),
                     }
                 }
             }
             StreamElement::Yield => {
-                log::debug!("{} Received Yield from downstream, marking for flush", coord!(self));
-                self.must_flush = true;
+                log::debug!("{} BLOCKING END: Received Yield from downstream, marking for flush", coord!(self));
             }
             StreamElement::FlushBatch => {
-                log::debug!("{} Received FlushBatch from downstream, marking for flush", coord!(self));
-                self.must_flush = true;
+                log::debug!("{} BLOCKING END: Received FlushBatch from downstream, marking for flush", coord!(self));
             }
         };
 
@@ -311,21 +261,8 @@ where
                 metadata.coord,
                 self.senders.len()
             );
-            for (_, batcher) in self.senders.drain() {
-                batcher.end();
-            }
-            self.must_flush = false;
+            self.senders.drain();
         }
-
-        if self.must_flush {
-            log::debug!("{} Flushing and yielding", coord!(self));
-            match self.flush_all() {
-                Ok(()) => {}
-                Err(e) => self.must_flush = true,
-            }
-            return StreamElement::Yield;
-        }
-
         to_return
     }
 
