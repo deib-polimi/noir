@@ -158,64 +158,65 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> StartBlock<Out
     }
 }
 
-impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Stream
+impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send + Unpin> futures::Stream
     for StartBlock<Out, Receiver>
 {
     type Item = StreamElement<Out>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let metadata = self.metadata.as_ref().unwrap();
+        let this = self.get_mut();
+        let metadata = this.metadata.as_ref().unwrap();
 
         // all the previous blocks sent an end: we're done
-        if self.missing_terminate == 0 {
+        if this.missing_terminate == 0 {
             info!("StartBlock for {} has ended", metadata.coord);
             return Poll::Ready(Some(StreamElement::Terminate));
         }
-        if self.missing_flush_and_restart == 0 {
+        if this.missing_flush_and_restart == 0 {
             info!(
                 "StartBlock for {} is emitting flush and restart",
                 metadata.coord
             );
 
-            self.missing_flush_and_restart = self.num_previous_replicas;
-            self.watermark_frontier.reset();
+            this.missing_flush_and_restart = this.num_previous_replicas;
+            this.watermark_frontier.reset();
             // this iteration has ended, before starting the next one wait for the state update
-            self.wait_for_state = true;
-            self.state_generation += 2;
+            this.wait_for_state = true;
+            this.state_generation += 2;
             return Poll::Ready(Some(StreamElement::FlushAndRestart));
         }
 
         // let max_delay = metadata.batch_mode.max_delay();
 
-        if let Some((sender, ref mut inner)) = self.batch_iter {
+        if let Some((sender, ref mut inner)) = this.batch_iter {
             let msg = match inner.next() {
                 None => {
                     // Current batch is finished
-                    self.batch_iter = None;
-                    return self.poll_next(cx);
+                    this.batch_iter = None;
+                    return Pin::new(this).poll_next(cx);
                 }
                 Some(item) => {
                     match item {
                         StreamElement::Watermark(ts) => {
                             // update the frontier and return a watermark if necessary
-                            match self.watermark_frontier.update(sender, ts) {
+                            match this.watermark_frontier.update(sender, ts) {
                                 Some(ts) => StreamElement::Watermark(ts), // ts is safe
-                                None => return self.poll_next(cx),
+                                None => return Pin::new(this).poll_next(cx),
                             }
                         }
                         StreamElement::FlushAndRestart => {
                             // mark this replica as ended and let the frontier ignore it from now on
-                            self.watermark_frontier.update(sender, timestamp_max());
-                            self.missing_flush_and_restart -= 1;
-                            return self.poll_next(cx);
+                            this.watermark_frontier.update(sender, timestamp_max());
+                            this.missing_flush_and_restart -= 1;
+                            return Pin::new(this).poll_next(cx);
                         }
                         StreamElement::Terminate => {
-                            self.missing_terminate -= 1;
+                            this.missing_terminate -= 1;
                             debug!(
                                 "{} received a Terminate, {} more to come",
-                                metadata.coord, self.missing_terminate
+                                metadata.coord, this.missing_terminate
                             );
-                            return self.poll_next(cx);
+                            return Pin::new(this).poll_next(cx);
                         }
                         StreamElement::Yield => {
                             panic!("Start block received Yield! This should never happen!");
@@ -227,20 +228,20 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Strea
 
             // the previous iteration has ended, this message refers to the new iteration: we need to be
             // sure the state is set before we let this message pass
-            if self.wait_for_state {
-                if let Some(lock) = self.state_lock.as_ref() {
-                    lock.wait_for_update(self.state_generation);
+            if this.wait_for_state {
+                if let Some(lock) = this.state_lock.as_ref() {
+                    lock.wait_for_update(this.state_generation);
                 }
-                self.wait_for_state = false;
+                this.wait_for_state = false;
             }
             return Poll::Ready(Some(msg));
         }
 
-        match ready!(self.project().receiver.poll_recv(cx)) {
+        match ready!(Pin::new(&mut this.receiver).poll_recv(cx)) {
             Some(net_msg) => {
-                self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
-                self.already_timed_out = false;
-                return self.poll_next(cx);
+                this.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
+                this.already_timed_out = false;
+                return Pin::new(this).poll_next(cx);
             }
             None => todo!("Handle disconnect start channel"),
         }

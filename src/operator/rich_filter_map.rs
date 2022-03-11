@@ -1,6 +1,8 @@
 use crate::operator::{Data, DataKey, Operator};
 use crate::stream::{KeyValue, KeyedStream, Stream};
 
+use super::AsyncOperator;
+
 impl<Out: Data, OperatorChain> Stream<Out, OperatorChain>
 where
     OperatorChain: Operator<Out> + 'static,
@@ -69,5 +71,27 @@ where
         self.rich_map(f)
             .filter(|(_, x)| x.is_some())
             .map(|(_, x)| x.unwrap())
+    }
+}
+
+impl<Key: DataKey, Out: Data, OperatorChain> KeyedStream<Key, Out, OperatorChain>
+where
+    OperatorChain: AsyncOperator<KeyValue<Key, Out>> + 'static,
+{
+    /// Remove from the stream all the elements for which the provided function returns `None` and
+    /// keep the elements that returned `Some(_)`. The mapping function can be stateful.
+    ///
+    /// This is exactly like [`Stream::rich_filter_map`], but the function is cloned for each key.
+    /// This means that each key will have a unique mapping function (and therefore a unique state).
+    pub fn rich_filter_map_async<NewOut: Data, F>(
+        self,
+        f: F,
+    ) -> KeyedStream<Key, NewOut, impl AsyncOperator<KeyValue<Key, NewOut>>>
+    where
+        F: FnMut(KeyValue<&Key, Out>) -> Option<NewOut> + Send + Clone + 'static,
+    {
+        self.rich_map_async(f)
+            .filter_async(|(_, x)| x.is_some())
+            .map_async(|(_, x)| x.unwrap())
     }
 }

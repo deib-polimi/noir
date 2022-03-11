@@ -402,3 +402,19 @@ where
         KeyedStream(self.0.add_operator(get_operator))
     }
 }
+
+impl<Key: DataKey, Out: Data, OperatorChain> KeyedStream<Key, Out, OperatorChain>
+where
+    OperatorChain: AsyncOperator<KeyValue<Key, Out>> + 'static,
+{
+    pub(crate) fn add_async_operator<NewOut: Data, Op, GetOp>(
+        self,
+        get_operator: GetOp,
+    ) -> KeyedStream<Key, NewOut, Op>
+    where
+        Op: AsyncOperator<KeyValue<Key, NewOut>> + 'static,
+        GetOp: FnOnce(OperatorChain) -> Op,
+    {
+        KeyedStream(self.0.add_async_operator(get_operator))
+    }
+}

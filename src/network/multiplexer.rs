@@ -112,7 +112,7 @@ impl<Out: ExchangeData> MultiplexingSender<Out> {
     /// replica.
     fn handle_remote_connection(
         coord: DemuxCoord,
-        local_receiver: Receiver<(ReceiverEndpoint, NetworkMessage<Out>)>,
+        mut local_receiver: Receiver<(ReceiverEndpoint, NetworkMessage<Out>)>,
         mut stream: TcpStream,
     ) {
         let address = stream

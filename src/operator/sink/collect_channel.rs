@@ -1,24 +1,28 @@
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use futures::ready;
+
 use crate::block::{BlockStructure, OperatorKind, OperatorStructure};
 use crate::operator::sink::Sink;
-use crate::operator::{ExchangeData, ExchangeDataKey, Operator, StreamElement};
+use crate::operator::{ExchangeData, ExchangeDataKey, Operator, StreamElement, AsyncOperator};
 use crate::scheduler::ExecutionMetadata;
 use crate::stream::{KeyValue, KeyedStream, Stream};
 
-#[cfg(feature = "crossbeam")]
-use crossbeam_channel::{unbounded, Receiver, Sender};
-use flume::TrySendError;
-#[cfg(not(feature = "crossbeam"))]
-use flume::{unbounded, Receiver, Sender};
+use crate::channel::{Sender, Receiver, PollSender, channel};
 
+#[pin_project::pin_project]
 #[derive(Debug)]
 pub struct CollectChannelSink<Out: ExchangeData, PreviousOperators>
 where
     PreviousOperators: Operator<Out>,
 {
+    #[pin]
     prev: PreviousOperators,
     metadata: Option<ExecutionMetadata>,
     pending_item: Option<Out>,
-    tx: Option<Sender<Out>>,
+    #[pin]
+    tx: PollSender<Out>,
 }
 
 impl<Out: ExchangeData, PreviousOperators> Operator<()>
@@ -32,37 +36,17 @@ where
     }
 
     fn next(&mut self) -> StreamElement<()> {
-        if let Some(item) = self.pending_item.take() {
-            let tx = self.tx.as_ref().unwrap();
-            match tx.try_send(item) {
-                Ok(()) => {}
-                Err(TrySendError::Full(t)) => {
-                    log::debug!("Output channel full, yielding {} [1]", self.metadata.as_ref().unwrap().coord);
-                    self.pending_item = Some(t);
-                    return StreamElement::Yield;
-                }
-                Err(TrySendError::Disconnected(_)) => panic!(),
-            }
-        }
-
         match self.prev.next() {
             StreamElement::Item(t) | StreamElement::Timestamped(t, _) => {
-                let tx = self.tx.as_ref().unwrap();
-                match tx.try_send(t) {
+                log::warn!("USING BLOCKING CHANNEL SINK");
+                let tx = self.tx.get_ref().cloned().unwrap();
+                match tx.blocking_send(t) {
                     Ok(()) => StreamElement::Item(()),
-                    Err(TrySendError::Full(t)) => {
-                        log::debug!("Output channel full, yielding {} [2]", self.metadata.as_ref().unwrap().coord);
-                        self.pending_item = Some(t);
-                        StreamElement::Yield
-                    }
-                    Err(TrySendError::Disconnected(_)) => panic!(),
+                    Err(_) => panic!(),
                 }
             }
             StreamElement::Watermark(w) => StreamElement::Watermark(w),
-            StreamElement::Terminate => {
-                self.tx = None;
-                StreamElement::Terminate
-            }
+            StreamElement::Terminate => StreamElement::Terminate,
             StreamElement::FlushBatch => StreamElement::FlushBatch,
             StreamElement::FlushAndRestart => StreamElement::FlushAndRestart,
             StreamElement::Yield => StreamElement::Yield,
@@ -77,6 +61,51 @@ where
         let mut operator = OperatorStructure::new::<Out, _>("CollectChannelSink");
         operator.kind = OperatorKind::Sink;
         self.prev.structure().add_operator(operator)
+    }
+}
+
+
+impl<Out: ExchangeData, PreviousOperators> futures::Stream
+    for CollectChannelSink<Out, PreviousOperators>
+where
+    PreviousOperators: AsyncOperator<Out>,
+{
+    type Item = StreamElement<()>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut proj = self.project();
+        loop {
+            if let Some(item) = proj.pending_item.take() {
+                match proj.tx.as_mut().poll_reserve(cx) {
+                    Poll::Ready(Ok(_)) => {
+                        proj.tx.send_item(item).ok().unwrap(); // TODO: check
+                        return Poll::Ready(Some(StreamElement::Item(())))
+                    }
+                    Poll::Ready(Err(_)) => {
+                        panic!("Channel disconnected");
+                    }
+                    Poll::Pending => {
+                        *proj.pending_item = Some(item);
+                        return Poll::Pending;
+                    }
+                }
+            }
+
+            assert!(proj.pending_item.is_none());
+            let r = match ready!(proj.prev.as_mut().poll_next(cx)).unwrap_or_else(|| StreamElement::Terminate) {
+                StreamElement::Item(t) | StreamElement::Timestamped(t, _) => {
+                    *proj.pending_item = Some(t);
+                    continue;
+                }
+                StreamElement::Watermark(w) => StreamElement::Watermark(w),
+                StreamElement::Terminate => StreamElement::Terminate,
+                StreamElement::FlushBatch => StreamElement::FlushBatch,
+                StreamElement::FlushAndRestart => StreamElement::FlushAndRestart,
+                StreamElement::Yield => panic!("Should never receive a yield!"),
+            };
+
+            return Poll::Ready(Some(r));
+        }
     }
 }
 
@@ -123,12 +152,55 @@ where
     /// }
     /// assert_eq!(v, (0..10u32).collect::<Vec<_>>());
     /// ```
-    pub fn collect_channel(self) -> Receiver<Out> {
-        let (tx, rx) = unbounded();
+    pub fn collect_channel(self, capacity: usize) -> Receiver<Out> {
+        let (tx, rx) = channel(capacity);
         self.max_parallelism(1)
             .add_operator(|prev| CollectChannelSink {
                 prev,
-                tx: Some(tx),
+                tx: PollSender::new(tx),
+                metadata: None,
+                pending_item: None,
+            })
+            .finalize_block();
+        rx
+    }
+}
+
+impl<Out: ExchangeData, OperatorChain> Stream<Out, OperatorChain>
+where
+    OperatorChain: AsyncOperator<Out> + 'static,
+{
+    /// Close the stream and store all the resulting items into a [`Vec`] on a single host.
+    ///
+    /// If the stream is distributed among multiple replicas, a bottleneck is placed where all the
+    /// replicas sends the items to.
+    ///
+    /// **Note**: the order of items and keys is unspecified.
+    ///
+    /// **Note**: this operator will split the current block.
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// # use noir::{StreamEnvironment, EnvironmentConfig};
+    /// # use noir::operator::source::IteratorSource;
+    /// # let mut env = StreamEnvironment::new(EnvironmentConfig::local(1));
+    /// let s = env.stream(IteratorSource::new((0..10u32)));
+    /// let rx = s.collect_channel();
+    ///
+    /// env.execute();
+    /// let mut v = Vec::new();
+    /// while let Ok(x) = rx.recv() {
+    ///     v.push(x)
+    /// }
+    /// assert_eq!(v, (0..10u32).collect::<Vec<_>>());
+    /// ```
+    pub fn collect_channel_async(self, capacity: usize) -> Receiver<Out> {
+        let (tx, rx) = channel(capacity);
+        self.max_parallelism_async(1)
+            .add_async_operator(|prev| CollectChannelSink {
+                prev,
+                tx: PollSender::new(tx),
                 metadata: None,
                 pending_item: None,
             })
@@ -169,8 +241,8 @@ where
     /// v.sort_unstable(); // the output order is nondeterministic
     /// assert_eq!(v, vec![(0, 0), (0, 2), (1, 1)]);
     /// ```
-    pub fn collect_channel(self) -> Receiver<(Key, Out)> {
-        self.unkey().collect_channel()
+    pub fn collect_channel(self, capacity: usize) -> Receiver<(Key, Out)> {
+        self.unkey().collect_channel(capacity)
     }
 }
 
@@ -186,7 +258,7 @@ mod tests {
     fn collect_channel() {
         let mut env = StreamEnvironment::new(EnvironmentConfig::local(4));
         let source = source::IteratorSource::new(0..10u8);
-        let rx = env.stream(source).collect_channel();
+        let rx = env.stream(source).collect_channel(200);
         env.execute();
         let mut v = Vec::new();
         while let Ok(x) = rx.recv() {

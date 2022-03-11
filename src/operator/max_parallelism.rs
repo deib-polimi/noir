@@ -3,6 +3,8 @@ use crate::operator::end::EndBlock;
 use crate::operator::{ExchangeData, Operator};
 use crate::stream::Stream;
 
+use super::AsyncOperator;
+
 impl<Out: ExchangeData, OperatorChain> Stream<Out, OperatorChain>
 where
     OperatorChain: Operator<Out> + 'static,
@@ -15,6 +17,26 @@ where
         assert!(max_parallelism > 0, "Cannot set the parallelism to zero");
 
         let mut new_stream = self.add_block(EndBlock::new, NextStrategy::only_one());
+        new_stream
+            .block
+            .scheduler_requirements
+            .max_parallelism(max_parallelism);
+        new_stream
+    }
+}
+
+impl<Out: ExchangeData, OperatorChain> Stream<Out, OperatorChain>
+where
+    OperatorChain: AsyncOperator<Out> + 'static,
+{
+    /// Change the maximum parallelism of the following operators.
+    ///
+    /// **Note**: this operator is pretty advanced, some operators may need to be fully replicated
+    /// and will fail otherwise.
+    pub fn max_parallelism_async(self, max_parallelism: usize) -> Stream<Out, impl AsyncOperator<Out>> {
+        assert!(max_parallelism > 0, "Cannot set the parallelism to zero");
+
+        let mut new_stream = self.add_async_block(EndBlock::new, NextStrategy::only_one());
         new_stream
             .block
             .scheduler_requirements

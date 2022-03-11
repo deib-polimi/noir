@@ -1,17 +1,16 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Duration;
 
-use futures::{Sink, SinkExt};
+use futures::Sink;
 use nanorand::Rng;
 
-use crate::channel::{channel, Receiver, RecvTimeoutError, SelectResult, Sender, PollSender};
+use crate::channel::{channel, Receiver, SelectResult, Sender, PollSender};
 use crate::network::{NetworkMessage, ReceiverEndpoint};
 use crate::network::multiplexer::MultiplexingSender;
 use crate::operator::ExchangeData;
 use crate::profiler::{get_profiler, Profiler};
 
-pub fn local_channel<In: ExchangeData>(receiver_endpoint: ReceiverEndpoint, capacity: usize) -> (NetworkSender<In>, NetworkReceiver<In>) {
+pub(crate) fn local_channel<In: ExchangeData>(receiver_endpoint: ReceiverEndpoint, capacity: usize) -> (NetworkSender<In>, NetworkReceiver<In>) {
     let (sender, receiver) = channel(capacity);
 
     let sender = NetworkSender::local(receiver_endpoint, sender);
@@ -24,7 +23,7 @@ pub fn local_channel<In: ExchangeData>(receiver_endpoint: ReceiverEndpoint, capa
     (sender, receiver)
 }
 
-pub fn remote_channel<In: ExchangeData>(receiver_endpoint: ReceiverEndpoint, sender: MultiplexingSender<In>) -> NetworkSender<In> {
+pub(crate) fn remote_channel<In: ExchangeData>(receiver_endpoint: ReceiverEndpoint, sender: MultiplexingSender<In>) -> NetworkSender<In> {
     let sender = NetworkSender::remote(receiver_endpoint, sender);
 
     sender
@@ -37,22 +36,25 @@ pub fn remote_channel<In: ExchangeData>(receiver_endpoint: ReceiverEndpoint, sen
 /// connection internally this points to the multiplexer that handles the remote channel.
 #[derive(Clone, Derivative)]
 #[derivative(Debug)]
+#[pin_project::pin_project]
 pub(crate) struct NetworkSender<Out: ExchangeData> {
     /// The ReceiverEndpoint of the recipient.
     pub receiver_endpoint: ReceiverEndpoint,
     /// The generic sender that will send the message either locally or remotely.
     #[derivative(Debug = "ignore")]
+    #[pin]
     sender: NetworkSenderImpl<Out>,
 }
 
 /// The internal sender that sends either to a local in-memory channel, or to a remote channel using
 /// a multiplexer.
 #[derive(Clone)]
+#[pin_project::pin_project(project = NetworkSenderProj)]
 pub(crate) enum NetworkSenderImpl<Out: ExchangeData> {
     /// The channel is local, use an in-memory channel.
-    Local(PollSender<NetworkMessage<Out>>),
+    Local(#[pin] PollSender<NetworkMessage<Out>>),
     /// The channel is remote, use the multiplexer.
-    Remote(MultiplexingSender<Out>),
+    Remote(#[pin] MultiplexingSender<Out>),
 }
 
 impl<Out: ExchangeData> NetworkSender<Out> {
@@ -85,30 +87,30 @@ impl<T: ExchangeData> Sink<NetworkMessage<T>> for NetworkSender<T> {
     type Error = tokio_util::sync::PollSendError<NetworkMessage<T>>;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match &self.sender {
-            NetworkSenderImpl::Local(sender) => sender.poll_ready_unpin(cx),
-            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
+        match self.project().sender.project() {
+            NetworkSenderProj::Local(sender) => sender.poll_ready(cx),
+            NetworkSenderProj::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
         }
     }
 
     fn start_send(self: Pin<&mut Self>, item: NetworkMessage<T>) -> Result<(), Self::Error> {
-        match &self.sender {
-            NetworkSenderImpl::Local(sender) => sender.start_send_unpin(item),
-            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
+        match self.project().sender.project() {
+            NetworkSenderProj::Local(sender) => sender.start_send(item),
+            NetworkSenderProj::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
         }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match &self.sender {
-            NetworkSenderImpl::Local(sender) => sender.poll_flush_unpin(cx),
-            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
+        match self.project().sender.project() {
+            NetworkSenderProj::Local(sender) => sender.poll_flush(cx),
+            NetworkSenderProj::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
         }
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match &self.sender {
-            NetworkSenderImpl::Local(sender) => sender.poll_close_unpin(cx),
-            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
+        match self.project().sender.project() {
+            NetworkSenderProj::Local(sender) => sender.poll_close(cx),
+            NetworkSenderProj::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
         }
     }
 }
@@ -136,22 +138,20 @@ pub(crate) struct NetworkReceiver<In: ExchangeData> {
 }
 
 impl<Out: ExchangeData> NetworkReceiver<Out> {
-    #[inline]
-    fn profile_message(&self, message: &NetworkMessage<Out>) {
-        get_profiler().items_in(
-            message.sender,
-            self.receiver_endpoint.coord,
-            message.num_items(),
-        );
-    }
-
     pub fn poll_recv(
         self: Pin<&'_ mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<NetworkMessage<Out>>> {
-        match self.project().receiver.poll_recv(cx) {
+        let mut this = self.project();
+        let r = this.receiver.poll_recv(cx);
+        match r {
             Poll::Ready(Some(msg)) => {
-                self.profile_message(&msg);
+                get_profiler().items_in(
+                    msg.sender,
+                    this.receiver_endpoint.coord,
+                    msg.num_items(),
+                );
+
                 Poll::Ready(Some(msg))
             }
             o => o,
@@ -169,8 +169,8 @@ impl<Out: ExchangeData> NetworkReceiver<Out> {
     /// randomly (with an unspecified probability). It's guaranteed this function has the eventual
     /// fairness property.
     pub fn blocking_select<In2: ExchangeData>(
-        &self,
-        other: &NetworkReceiver<In2>,
+        &mut self,
+        other: &mut NetworkReceiver<In2>,
     ) -> SelectResult<NetworkMessage<Out>, NetworkMessage<In2>> {
         log::error!("SELECT RECV FROM BLOCKING START BLOCK, SWITCH TO POLLING IMPL PLS");
 

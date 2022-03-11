@@ -1,17 +1,25 @@
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use futures::ready;
 
 use crate::block::{BlockStructure, OperatorStructure};
 use crate::operator::{Data, DataKey, Operator, StreamElement};
 use crate::scheduler::ExecutionMetadata;
 use crate::stream::{KeyValue, KeyedStream, Stream};
 
+use super::AsyncOperator;
+
+#[pin_project::pin_project]
 #[derive(Clone, Debug)]
 struct RichMap<Key: DataKey, Out: Data, NewOut: Data, F, OperatorChain>
 where
     F: FnMut(KeyValue<&Key, Out>) -> NewOut + Clone + Send,
     OperatorChain: Operator<KeyValue<Key, Out>>,
 {
+    #[pin]
     prev: OperatorChain,
     maps_fn: HashMap<Key, F, ahash::RandomState>,
     init_map: F,
@@ -78,6 +86,38 @@ where
         self.prev
             .structure()
             .add_operator(OperatorStructure::new::<NewOut, _>("RichMap"))
+    }
+}
+
+
+impl<Key: DataKey, Out: Data, NewOut: Data, F, OperatorChain> futures::Stream
+    for RichMap<Key, Out, NewOut, F, OperatorChain>
+where
+    F: FnMut(KeyValue<&Key, Out>) -> NewOut + Clone + Send,
+    OperatorChain: AsyncOperator<KeyValue<Key, Out>>,
+{
+    type Item = StreamElement<KeyValue<Key, NewOut>>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let proj = self.project();
+        let element = ready!(proj.prev.poll_next(cx)).unwrap_or_else(|| StreamElement::Terminate);
+        if matches!(element, StreamElement::FlushAndRestart) {
+            proj.maps_fn.clear();
+        }
+        let r = element.map(|(key, value)| {
+            let map_fn = if let Some(map_fn) = proj.maps_fn.get_mut(&key) {
+                map_fn
+            } else {
+                // the key is not present in the hashmap, so this always inserts a new map function
+                let map_fn = proj.init_map.clone();
+                proj.maps_fn.entry(key.clone()).or_insert(map_fn)
+            };
+
+            let new_value = (map_fn)((&key, value));
+            (key, new_value)
+        });
+
+        Poll::Ready(Some(r))
     }
 }
 
@@ -166,5 +206,24 @@ where
         F: FnMut(KeyValue<&Key, Out>) -> NewOut + Clone + Send + 'static,
     {
         self.add_operator(|prev| RichMap::new(prev, f))
+    }
+}
+
+impl<Key: DataKey, Out: Data, OperatorChain> KeyedStream<Key, Out, OperatorChain>
+where
+    OperatorChain: AsyncOperator<KeyValue<Key, Out>> + 'static,
+{
+    /// Map the elements of the stream into new elements. The mapping function can be stateful.
+    ///
+    /// This is exactly like [`Stream::rich_map`], but the function is cloned for each key. This
+    /// means that each key will have a unique mapping function (and therefore a unique state).
+    pub fn rich_map_async<NewOut: Data, F>(
+        self,
+        f: F,
+    ) -> KeyedStream<Key, NewOut, impl AsyncOperator<KeyValue<Key, NewOut>>>
+    where
+        F: FnMut(KeyValue<&Key, Out>) -> NewOut + Clone + Send + 'static,
+    {
+        self.add_async_operator(|prev| RichMap::new(prev, f))
     }
 }

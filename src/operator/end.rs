@@ -74,13 +74,16 @@ where
     }
 
     fn poll_all_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), FlushError>> {
-        for (_, sender) in self.senders.iter_mut() {
-            let result = ready!(Pin::new(sender).poll_ready(cx));
+        let proj = self.project();
+        for sender in proj.senders.values_mut() {
+            let coord = sender.coord();
+            let sender = Pin::new(sender);
+            let result = ready!(sender.poll_ready(cx));
 
             match result {
                 Ok(_) => {}
                 Err(e) => {
-                    log::debug!("Couldn't flush {} -> {}", self.metadata.as_ref().unwrap().coord, sender.coord());
+                    log::debug!("Couldn't flush {} -> {}", proj.metadata.as_ref().unwrap().coord, coord);
                     return Poll::Ready(Err(e))
                 }
             }
@@ -97,20 +100,21 @@ where
 {
     type Item = StreamElement<()>;
 
-    fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.poll_all_ready(cx) {
+    fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.as_mut().poll_all_ready(cx) {
             Poll::Ready(Ok(_)) => {}
             Poll::Ready(Err(e)) => {
                 panic!("Broken channel {e}"); // TODO: Check
             }
             Poll::Pending => return Poll::Pending,
         }
+        
+        let proj = self.project();
 
-        if self.terminating {
-            self.senders.drain();
+        if *proj.terminating {
+            proj.senders.drain();
         }
 
-        let mut proj = self.project();
 
         let message = ready!(proj.prev.poll_next(cx));
 
@@ -122,17 +126,17 @@ where
             StreamElement::Watermark(_)
             | StreamElement::Terminate
             | StreamElement::FlushAndRestart => {
-                for senders in self.sender_groups.iter() {
+                for senders in proj.sender_groups.iter() {
                     for &sender in senders.0.iter() {
                         // if this block is the end of the feedback loop it should not forward
                         // `Terminate` since the destination is before us in the termination chain,
                         // and therefore has already left
                         if matches!(message, StreamElement::Terminate)
-                            && Some(sender.coord.block_id) == self.feedback_id
+                            && Some(sender.coord.block_id) == *proj.feedback_id
                         {
                             continue;
                         }
-                        let sender = self.senders.get_mut(&sender).unwrap();
+                        let sender = proj.senders.get_mut(&sender).unwrap();
                         sender.enqueue(message.clone());
 
                         if matches!(message, StreamElement::FlushAndRestart) {
@@ -142,37 +146,37 @@ where
                 }
             }
             StreamElement::Item(item) | StreamElement::Timestamped(item, _) => {
-                let index = self.next_strategy.index(item);
-                for sender in self.sender_groups.iter() {
+                let index = proj.next_strategy.index(item);
+                for sender in proj.sender_groups.iter() {
                     let index = index % sender.0.len();
-                    self.senders
+                    proj.senders
                         .get_mut(&sender.0[index])
                         .unwrap()
                         .enqueue(message.clone())
                 }
             }
             StreamElement::Yield => {
-                log::error!("{} Received Yield from downstream", coord!(self));
+                log::error!("{} Received Yield from downstream", coord!(proj));
             }
             StreamElement::FlushBatch => {
-                log::debug!("{} Received FlushBatch from downstream, marking for flush", coord!(self));
-                for sender in self.senders.values() {
+                log::debug!("{} Received FlushBatch from downstream, marking for flush", coord!(proj));
+                for sender in proj.senders.values_mut() {
                     sender.request_flush();
                 }
             }
         };
 
         if matches!(to_return, StreamElement::Terminate) {
-            let metadata = self.metadata.as_ref().unwrap();
+            let metadata = proj.metadata.as_ref().unwrap();
             debug!(
                 "EndBlock at {} received Terminate, closing {} channels",
                 metadata.coord,
-                self.senders.len()
+                proj.senders.len()
             );
-            for sender in self.senders.values() {
+            for sender in proj.senders.values_mut() {
                 sender.request_flush();
             }
-            self.terminating = true;
+            *proj.terminating = true;
         }
 
         Poll::Ready(Some(to_return))

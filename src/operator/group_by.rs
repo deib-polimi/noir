@@ -55,7 +55,7 @@ where
     pub fn group_by_async<Key: DataKey, Keyer>(
         self,
         keyer: Keyer,
-    ) -> KeyedStream<Key, Out, impl Operator<KeyValue<Key, Out>>>
+    ) -> KeyedStream<Key, Out, impl AsyncOperator<KeyValue<Key, Out>>>
     where
         Keyer: Fn(&Out) -> Key + Send + Clone + 'static,
     {

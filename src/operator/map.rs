@@ -76,13 +76,13 @@ impl<Out: Data, NewOut: Data, F, PreviousOperators> futures::Stream
     for Map<Out, NewOut, F, PreviousOperators>
 where
     F: Fn(Out) -> NewOut + Send + Clone,
-    PreviousOperators: AsyncOperator<Out> + Unpin,
+    PreviousOperators: AsyncOperator<Out>,
 {
     type Item = StreamElement<NewOut>;
 
     fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
         let mut this = self.project();
-        let prev = ready!(this.prev.poll_next_unpin(cx));
+        let prev = ready!(this.prev.poll_next(cx));
         Poll::Ready(prev.map(|e| e.map(this.f)))
     }
 }
@@ -113,6 +113,35 @@ where
         F: Fn(Out) -> NewOut + Send + Clone + 'static,
     {
         self.add_operator(|prev| Map::new(prev, f))
+    }
+}
+
+impl<Out: Data, OperatorChain> Stream<Out, OperatorChain>
+where
+    OperatorChain: AsyncOperator<Out> + 'static,
+{
+    /// Map the elements of the stream into new elements.
+    ///
+    /// **Note**: this is very similar to [`Iteartor::map`](std::iter::Iterator::map).
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// # use noir::{StreamEnvironment, EnvironmentConfig};
+    /// # use noir::operator::source::IteratorSource;
+    /// # let mut env = StreamEnvironment::new(EnvironmentConfig::local(1));
+    /// let s = env.stream(IteratorSource::new((0..5)));
+    /// let res = s.map(|n| n * 10).collect_vec();
+    ///
+    /// env.execute();
+    ///
+    /// assert_eq!(res.get().unwrap(), vec![0, 10, 20, 30, 40]);
+    /// ```
+    pub fn map_async<NewOut: Data, F>(self, f: F) -> Stream<NewOut, impl AsyncOperator<NewOut>>
+    where
+        F: Fn(Out) -> NewOut + Send + Clone + 'static,
+    {
+        self.add_async_operator(|prev| Map::new(prev, f))
     }
 }
 
@@ -147,6 +176,45 @@ where
         F: Fn(KeyValue<&Key, Out>) -> NewOut + Send + Clone + 'static,
     {
         self.add_operator(|prev| {
+            Map::new(prev, move |(k, v)| {
+                let mapped_value = f((&k, v));
+                (k, mapped_value)
+            })
+        })
+    }
+}
+
+impl<Key: DataKey, Out: Data, OperatorChain> KeyedStream<Key, Out, OperatorChain>
+where
+    OperatorChain: AsyncOperator<KeyValue<Key, Out>> + 'static,
+{
+    /// Map the elements of the stream into new elements.
+    ///
+    /// **Note**: this is very similar to [`Iteartor::map`](std::iter::Iterator::map).
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// # use noir::{StreamEnvironment, EnvironmentConfig};
+    /// # use noir::operator::source::IteratorSource;
+    /// # let mut env = StreamEnvironment::new(EnvironmentConfig::local(1));
+    /// let s = env.stream(IteratorSource::new((0..5))).group_by(|&n| n % 2);
+    /// let res = s.map(|(_key, n)| 10 * n).collect_vec();
+    ///
+    /// env.execute();
+    ///
+    /// let mut res = res.get().unwrap();
+    /// res.sort_unstable();
+    /// assert_eq!(res, vec![(0, 0), (0, 20), (0, 40), (1, 10), (1, 30)]);
+    /// ```
+    pub fn map_async<NewOut: Data, F>(
+        self,
+        f: F,
+    ) -> KeyedStream<Key, NewOut, impl AsyncOperator<KeyValue<Key, NewOut>>>
+    where
+        F: Fn(KeyValue<&Key, Out>) -> NewOut + Send + Clone + 'static,
+    {
+        self.add_async_operator(|prev| {
             Map::new(prev, move |(k, v)| {
                 let mapped_value = f((&k, v));
                 (k, mapped_value)

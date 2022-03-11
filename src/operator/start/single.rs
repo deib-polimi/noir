@@ -56,7 +56,7 @@ impl<Out: ExchangeData> StartBlockReceiver<Out> for SingleStartBlockReceiver<Out
         0
     }
 
-    fn poll_recv(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<NetworkMessage<Out>>> {
+    fn poll_recv(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<NetworkMessage<Out>>> {
         let receiver = self.receiver.as_mut().unwrap();
         Pin::new(receiver).poll_recv(cx)
     }

@@ -221,6 +221,74 @@ where
     }
 }
 
+impl<In, Out, InnerIterator, OperatorChain> Stream<In, OperatorChain>
+where
+    OperatorChain: AsyncOperator<In> + 'static,
+    InnerIterator: Iterator<Item = Out> + Clone + Send + 'static,
+    In: Data + IntoIterator<IntoIter = InnerIterator, Item = InnerIterator::Item>,
+    Out: Data + Clone,
+{
+    /// Transform this stream of containers into a stream of all the contained values.
+    ///
+    /// **Note**: this is very similar to [`Iteartor::flatten`](std::iter::Iterator::flatten)
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// # use noir::{StreamEnvironment, EnvironmentConfig};
+    /// # use noir::operator::source::IteratorSource;
+    /// # let mut env = StreamEnvironment::new(EnvironmentConfig::local(1));
+    /// let s = env.stream(IteratorSource::new(vec![
+    ///     vec![1, 2, 3],
+    ///     vec![],
+    ///     vec![4, 5],
+    /// ].into_iter()));
+    /// let res = s.flatten().collect_vec();
+    ///
+    /// env.execute();
+    ///
+    /// assert_eq!(res.get().unwrap(), vec![1, 2, 3, 4, 5]);
+    /// ```
+    pub fn flatten_async(self) -> Stream<Out, impl AsyncOperator<Out>> {
+        self.add_async_operator(|prev| Flatten::new(prev))
+    }
+}
+
+impl<Out: Data, OperatorChain> Stream<Out, OperatorChain>
+where
+    OperatorChain: AsyncOperator<Out> + 'static,
+{
+    /// Apply a mapping operation to each element of the stream, the resulting stream will be the
+    /// flattened values of the result of the mapping.
+    ///
+    /// **Note**: this is very similar to [`Iteartor::flat_map`](std::iter::Iterator::flat_map)
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// # use noir::{StreamEnvironment, EnvironmentConfig};
+    /// # use noir::operator::source::IteratorSource;
+    /// # let mut env = StreamEnvironment::new(EnvironmentConfig::local(1));
+    /// let s = env.stream(IteratorSource::new((0..3)));
+    /// let res = s.flat_map(|n| vec![n, n]).collect_vec();
+    ///
+    /// env.execute();
+    ///
+    /// assert_eq!(res.get().unwrap(), vec![0, 0, 1, 1, 2, 2]);
+    /// ```
+    pub fn flat_map_async<MapOut: Data, NewOut: Data, F>(
+        self,
+        f: F,
+    ) -> Stream<NewOut, impl AsyncOperator<NewOut>>
+    where
+        MapOut: IntoIterator<Item = NewOut>,
+        <MapOut as IntoIterator>::IntoIter: Clone + Send + 'static,
+        F: Fn(Out) -> MapOut + Send + Clone + 'static,
+    {
+        self.map_async(f).flatten_async()
+    }
+}
+
 #[derive(Clone, Derivative)]
 #[derivative(Debug)]
 pub struct KeyedFlatten<Key, In, Out, InnerIterator, PreviousOperators>

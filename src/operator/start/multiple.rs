@@ -32,6 +32,11 @@ pub(crate) enum TwoSidesItem<OutL: Data, OutR: Data> {
     RightEnd,
 }
 
+enum ReceiverSide {
+    Left,
+    Right,
+}
+
 /// The actual receiver from one of the two sides.
 #[pin_project::pin_project]
 #[derive(Clone, Debug)]
@@ -76,8 +81,39 @@ impl<Out: ExchangeData, Item: ExchangeData> SideReceiver<Out, Item> {
         self.missing_terminate = self.num_replicas;
     }
 
-    fn poll_recv(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<NetworkMessage<Out>>> {
-        self.project().receiver.poll_recv(cx)
+    fn poll_recv(self: Pin<&mut Self>, side: ReceiverSide, cx: &mut Context<'_>) -> Poll<Option<NetworkMessage<Out>>> {
+        todo!();
+        // let res = ready!(self.project().receiver.poll_recv(cx));
+        
+        // let sender = message.sender();
+        // let data = message
+        //     .into_iter()
+        //     .flat_map(|item| {
+        //         let mut res = Vec::new();
+        //         if matches!(item, StreamElement::FlushAndRestart) {
+        //             side.missing_flush_and_restart -= 1;
+        //             // make sure to add this message before `FlushAndRestart`
+        //             if side.missing_flush_and_restart == 0 {
+        //                 res.push(StreamElement::Item(end.clone()));
+        //             }
+        //         }
+        //         if matches!(item, StreamElement::Terminate) {
+        //             side.missing_terminate -= 1;
+        //         }
+        //         // StreamElement::Terminate should not be put in the cache
+        //         if !side.cached || !matches!(item, StreamElement::Terminate) {
+        //             res.push(item.map(wrap));
+        //         }
+        //         res
+        //     })
+        //     .collect::<Vec<_>>();
+        // let message = NetworkMessage::new_batch(data, sender);
+        // if side.cached {
+        //     side.cache.push(message.clone());
+        //     // the elements are already out, ignore the cache for this round
+        //     side.cache_pointer = side.cache.len();
+        // }
+        // message
     }
     
     fn blocking_recv_one(&mut self) -> Option<NetworkMessage<Out>> {
@@ -85,28 +121,29 @@ impl<Out: ExchangeData, Item: ExchangeData> SideReceiver<Out, Item> {
     }
 
     fn poll_select<Out2: ExchangeData, Item2: ExchangeData>(
-        self: Pin<&mut Self>,
-        other: Pin<&mut SideReceiver<Out2, Item2>>,
+        lhs: Pin<&mut Self>,
+        rhs: Pin<&mut SideReceiver<Out2, Item2>>,
         cx: &mut Context<'_>
     ) -> Poll<SelectResult<NetworkMessage<Out>, NetworkMessage<Out2>>> {
         // TODO: uniform rand usages
-        if nanorand::tls_rng().generate_range(0..2u8) > 0 {
-            if let Poll::Ready(msg) = self.poll_recv(cx) {
-                return Poll::Ready(SelectResult::A(msg));
-            }
-            if let Poll::Ready(msg) = other.poll_recv(cx) {
-                return Poll::Ready(SelectResult::B(msg));
-            }
-            Poll::Pending
-        } else {
-            if let Poll::Ready(msg) = other.poll_recv(cx) {
-                return Poll::Ready(SelectResult::B(msg));
-            }
-            if let Poll::Ready(msg) = self.poll_recv(cx) {
-                return Poll::Ready(SelectResult::A(msg));
-            }
-            Poll::Pending
-        }
+        todo!();
+        // if nanorand::tls_rng().generate_range(0..2u8) > 0 {
+        //     if let Poll::Ready(msg) = lhs.poll_recv(cx) {
+        //         return Poll::Ready(SelectResult::A(msg));
+        //     }
+        //     if let Poll::Ready(msg) = rhs.poll_recv(cx) {
+        //         return Poll::Ready(SelectResult::B(msg));
+        //     }
+        //     Poll::Pending
+        // } else {
+        //     if let Poll::Ready(msg) = rhs.poll_recv(cx) {
+        //         return Poll::Ready(SelectResult::B(msg));
+        //     }
+        //     if let Poll::Ready(msg) = lhs.poll_recv(cx) {
+        //         return Poll::Ready(SelectResult::A(msg));
+        //     }
+        //     Poll::Pending
+        // }
     }
 
     fn reset(&mut self) {
@@ -335,94 +372,97 @@ impl<OutL: ExchangeData, OutR: ExchangeData> MultipleStartBlockReceiver<OutL, Ou
     /// This will access only the needed side (i.e. if one of the sides ended, only the other is
     /// probed). This will try to use the cache if it's available.
     fn poll_select( // TODO: CHECK
-        self: Pin<&mut Self>, cx: &mut Context<'_>
+        mut self: Pin<&mut Self>, cx: &mut Context<'_>
     ) -> Poll<Option<NetworkMessage<TwoSidesItem<OutL, OutR>>>> {
+        todo!();
         // both sides received all the `StreamElement::Terminate`, but the cached ones have never
         // been emitted
-        if self.left.is_terminated() && self.right.is_terminated() {
-            let num_terminates = if self.left.cached {
-                self.left.num_replicas
-            } else if self.right.cached {
-                self.right.num_replicas
-            } else {
-                0
-            };
-            if num_terminates > 0 {
-                return Poll::Ready(Some(NetworkMessage::new_batch(
-                    (0..num_terminates)
-                        .map(|_| StreamElement::Terminate)
-                        .collect(),
-                    Default::default(),
-                )));
-            }
-        }
+        // let mut this = self.as_mut();
 
-        // both left and right received all the FlushAndRestart, prepare for the next iteration
-        if self.left.is_ended()
-            && self.right.is_ended()
-            && self.left.cache_finished()
-            && self.right.cache_finished()
-        {
-            self.left.reset();
-            self.right.reset();
-            self.first_message = true;
-        }
+        // if this.left.is_terminated() && this.right.is_terminated() {
+        //     let num_terminates = if this.left.cached {
+        //         this.left.num_replicas
+        //     } else if this.right.cached {
+        //         this.right.num_replicas
+        //     } else {
+        //         0
+        //     };
+        //     if num_terminates > 0 {
+        //         return Poll::Ready(Some(NetworkMessage::new_batch(
+        //             (0..num_terminates)
+        //                 .map(|_| StreamElement::Terminate)
+        //                 .collect(),
+        //             Default::default(),
+        //         )));
+        //     }
+        // }
 
-        let proj = self.project();
+        // // both left and right received all the FlushAndRestart, prepare for the next iteration
+        // if this.left.is_ended()
+        //     && this.right.is_ended()
+        //     && this.left.cache_finished()
+        //     && this.right.cache_finished()
+        // {
+        //     this.left.reset();
+        //     this.right.reset();
+        //     this.first_message = true;
+        // }
 
-        // First message of this iteration, and there is a side with the cache:
-        // we need to ask to the other side FIRST to know if this is the end of the stream or a new
-        // iteration is about to start.
-        let data = if self.first_message && (self.left.cached || self.right.cached) {
-            debug_assert!(!self.left.cached || self.left.cache_full);
-            debug_assert!(!self.right.cached || self.right.cache_full);
-            self.first_message = false;
-            if self.left.cached {
-                Side::Right(ready!(proj.right.poll_recv(cx)))
-            } else {
-                Side::Left(ready!(proj.left.poll_recv(cx)))
-            }
-        } else if self.left.cached && self.left.cache_full && !self.left.cache_finished() {
-            // The left side is cached, therefore we can access it immediately
-            return Poll::Ready(Some(self.left.next_cached_item()));
-        } else if self.right.cached && self.right.cache_full && !self.right.cache_finished() {
-            // The right side is cached, therefore we can access it immediately
-            return Poll::Ready(Some(self.right.next_cached_item()));
-        } else if self.left.is_ended() {
-            // There is nothing more to read from the left side (if cached, all the cache has
-            // already been read).
-                Side::Right(ready!(proj.right.poll_recv(cx)))
-        } else if self.right.is_ended() {
-            // There is nothing more to read from the right side (if cached, all the cache has
-            // already been read).
-                Side::Left(ready!(proj.left.poll_recv(cx)))
-        } else {
-            let data = proj.left.poll_select(proj.right, cx);
-            match ready!(data) {
-                SelectResult::A(left) => {
-                    Side::Left(left)
-                }
-                SelectResult::B(right) => {
-                    Side::Right(right)
-                }
-            }
-        };
+        // let mut proj = this.project();
 
-        Poll::Ready(match data {
-            Side::Left(Some(left)) => Some(Self::process_side(
-                &mut self.left,
-                left,
-                TwoSidesItem::Left,
-                TwoSidesItem::LeftEnd,
-            )),
-            Side::Right(Some(right)) => Some(Self::process_side(
-                &mut self.right,
-                right,
-                TwoSidesItem::Right,
-                TwoSidesItem::RightEnd,
-            )),
-            Side::Left(None) | Side::Right(None) => None,
-        })
+        // // First message of this iteration, and there is a side with the cache:
+        // // we need to ask to the other side FIRST to know if this is the end of the stream or a new
+        // // iteration is about to start.
+        // let data = if *proj.first_message && (proj.left.cached || proj.right.cached) {
+        //     debug_assert!(!proj.left.cached || proj.left.cache_full);
+        //     debug_assert!(!proj.right.cached || proj.right.cache_full);
+        //     *proj.first_message = false;
+        //     if proj.left.cached {
+        //         Side::Right(ready!(proj.right.poll_recv(cx)))
+        //     } else {
+        //         Side::Left(ready!(proj.left.poll_recv(cx)))
+        //     }
+        // } else if proj.left.cached && proj.left.cache_full && !proj.left.cache_finished() {
+        //     // The left side is cached, therefore we can access it immediately
+        //     return Poll::Ready(Some(proj.left.next_cached_item()));
+        // } else if proj.right.cached && proj.right.cache_full && !proj.right.cache_finished() {
+        //     // The right side is cached, therefore we can access it immediately
+        //     return Poll::Ready(Some(proj.right.next_cached_item()));
+        // } else if proj.left.is_ended() {
+        //     // There is nothing more to read from the left side (if cached, all the cache has
+        //     // already been read).
+        //         Side::Right(ready!(proj.right.poll_recv(cx)))
+        // } else if proj.right.is_ended() {
+        //     // There is nothing more to read from the right side (if cached, all the cache has
+        //     // already been read).
+        //         Side::Left(ready!(proj.left.poll_recv(cx)))
+        // } else {
+        //     let data = SideReceiver::poll_select(proj.left, proj.right, cx);
+        //     match ready!(data) {
+        //         SelectResult::A(left) => {
+        //             Side::Left(left)
+        //         }
+        //         SelectResult::B(right) => {
+        //             Side::Right(right)
+        //         }
+        //     }
+        // };
+
+        // Poll::Ready(match data {
+        //     Side::Left(Some(left)) => Some(Self::process_side(
+        //         proj.left.get_mut(),
+        //         left,
+        //         TwoSidesItem::Left,
+        //         TwoSidesItem::LeftEnd,
+        //     )),
+        //     Side::Right(Some(right)) => Some(Self::process_side(
+        //         proj.right.get_mut(),
+        //         right,
+        //         TwoSidesItem::Right,
+        //         TwoSidesItem::RightEnd,
+        //     )),
+        //     Side::Left(None) | Side::Right(None) => None,
+        // })
     }
 }
 

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use coarsetime::Instant;
 
-use futures::{ready, SinkExt};
+use futures::{ready, SinkExt, Sink};
 use crate::network::{Coord, NetworkMessage, NetworkSender};
 use crate::operator::{ExchangeData, StreamElement};
 
@@ -39,6 +39,13 @@ impl<T> FlushState<T> {
         match &self {
             FlushState::Idle => true,
             _ => false,
+        }
+    }
+    pub fn take_pending(&mut self) -> T {
+        let prev = std::mem::replace(self, FlushState::MustFlush);
+        match prev {
+            FlushState::Pending(t) => t,
+            _ => panic!("Trying to take from invalid FlushState")
         }
     }
 }
@@ -76,36 +83,36 @@ impl<Out: ExchangeData> Batcher<Out> {
     }
     
     pub fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), FlushError>> {
-        match self.state {
-            FlushState::Idle => Poll::Ready(Ok(())),
-            FlushState::Pending(msg) => {
-                let proj = self.project();
-                let sender = proj.remote_sender;
-                let res = ready!(sender.poll_ready_unpin(cx))
-                    .and_then(|_| sender.start_send_unpin(msg));
+        let proj = self.project();
+        let mut sender = proj.remote_sender;
+        
+        // TODO: Could possibly be done better
+        loop {
+            if matches!(proj.state, FlushState::Idle) {
+                return Poll::Ready(Ok(()))
+            } else if matches!(proj.state, FlushState::Pending(_)) {
+                let res = ready!(sender.as_mut().poll_ready(cx))
+                    .and_then(|_| sender.as_mut().start_send(proj.state.take_pending()));
                 match res {
                     Ok(_) => {
-                        *proj.state = FlushState::MustFlush;
-                        self.poll_ready(cx)
-                    },
+                        continue;
+                    }
                     Err(_) => {
-                        Poll::Ready(Err(FlushError::Disconnected))
+                        return Poll::Ready(Err(FlushError::Disconnected))
                     }
                 }
-            }
-            FlushState::MustFlush => {
-                let proj = self.project();
-                let sender = proj.remote_sender;
-                let res = ready!(sender.poll_flush_unpin(cx));
+            } else if matches!(proj.state, FlushState::MustFlush) {
+                let res = ready!(sender.as_mut().poll_flush(cx));
                 match res {
                     Ok(_) => {
-                        *proj.state = FlushState::Idle;
-                        Poll::Ready(Ok(()))
+                        return Poll::Ready(Ok(()))
                     },
                     Err(_) => {
-                        Poll::Ready(Err(FlushError::Disconnected))
+                        return Poll::Ready(Err(FlushError::Disconnected))
                     }
                 }
+            } else {
+                unreachable!();
             }
         }
     }

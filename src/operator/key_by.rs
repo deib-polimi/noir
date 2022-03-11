@@ -53,11 +53,12 @@ where
     type Item = StreamElement<KeyValue<Key, Out>>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let el = ready!(self.project().prev.poll_next(cx)).unwrap_or_else(|| StreamElement::Terminate);
+        let proj = self.project();
+        let el = ready!(proj.prev.poll_next(cx)).unwrap_or_else(|| StreamElement::Terminate);
         let n = match el {
-            StreamElement::Item(t) => StreamElement::Item(((self.keyer)(&t), t)),
+            StreamElement::Item(t) => StreamElement::Item(((proj.keyer)(&t), t)),
             StreamElement::Timestamped(t, ts) => {
-                StreamElement::Timestamped(((self.keyer)(&t), t), ts)
+                StreamElement::Timestamped(((proj.keyer)(&t), t), ts)
             }
             StreamElement::Watermark(w) => StreamElement::Watermark(w),
             StreamElement::Terminate => StreamElement::Terminate,

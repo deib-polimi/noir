@@ -180,7 +180,7 @@ impl<In: ExchangeData> DemultiplexingReceiver<In> {
     /// deserializing threads.
     fn registry_thread(
         coord: DemuxCoord,
-        receiver: UnboundedReceiver<RegistryMessage<In>>,
+        mut receiver: UnboundedReceiver<RegistryMessage<In>>,
     ) {
         debug!("Starting demultiplex registry for {}", coord);
         let mut known_receivers: Vec<ReceiverEndpointMessageSender<In>> = Vec::new();
@@ -209,7 +209,7 @@ impl<In: ExchangeData> DemultiplexingReceiver<In> {
     /// deserialized data. If the recipient is not yet known, it is waited until it registers.
     fn demux_thread(
         coord: DemuxCoord,
-        rx_endpoints: UnboundedReceiver<(
+        mut rx_endpoints: UnboundedReceiver<(
             ReceiverEndpoint,
             Sender<NetworkMessage<In>>,
         )>,
