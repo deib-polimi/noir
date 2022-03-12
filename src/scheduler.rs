@@ -6,9 +6,7 @@ use std::sync::Arc;
 use itertools::Itertools;
 
 use crate::block::{BatchMode, BlockStructure, InnerBlock, JobGraphGenerator};
-use crate::channel::{
-    Receiver, Sender, UnboundedReceiver, UnboundedSender,
-};
+use crate::channel::Receiver;
 use crate::config::{EnvironmentConfig, ExecutionRuntime, LocalRuntimeConfig, RemoteRuntimeConfig};
 use crate::network::{Coord, NetworkTopology};
 use crate::operator::{Data, Operator, StreamElement};
@@ -320,6 +318,12 @@ impl Scheduler {
             block_structures.push((coord, structure.clone()));
             job_graph_generator.add_block(coord.block_id, structure);
         }
+
+        rt.block_on(async move {
+            for mut h in join {
+                h.recv().await;
+            }
+        });
         
         network.lock().stop_and_wait();
 

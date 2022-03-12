@@ -84,7 +84,7 @@ where
         &self,
         senders: &HashMap<ReceiverEndpoint, NetworkSender<Out>>,
         ignore_block: Option<BlockId>,
-    ) -> Vec<SenderList> {
+    ) -> Vec<Vec<ReceiverEndpoint>> {
         // If NextStrategy is All, return every sender except the ignored ones.
         // Each sender has its own SenderList.
         if matches!(self, NextStrategy::All) {
@@ -92,7 +92,7 @@ where
                 .iter()
                 .filter_map(|(coord, sender)| match ignore_block {
                     Some(ignore_block) if coord.coord.block_id == ignore_block => None,
-                    _ => Some(SenderList(vec![sender.receiver_endpoint])),
+                    _ => Some(vec![sender.receiver_endpoint]),
                 })
                 .collect();
         }
@@ -113,7 +113,7 @@ where
             if matches!(self, NextStrategy::OnlyOne) {
                 assert_eq!(block_senders.len(), 1, "OnlyOne must have a single sender");
             }
-            senders.push(SenderList(block_senders));
+            senders.push(block_senders);
         }
         senders
     }

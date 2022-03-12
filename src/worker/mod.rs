@@ -88,6 +88,7 @@ where
     }
 
     pub fn next(&mut self) -> StreamElement<Out> {
+        log::warn!("USING BLOCKING WORKER");
         self.block.operators.next()
     }
 
@@ -95,8 +96,8 @@ where
         &self.metadata
     }
 
-    pub fn end(&self) {
-        self.tx_end.blocking_send(()).unwrap()
+    pub fn tx_end(&self) -> Sender<()> {
+        self.tx_end.clone()
     }
 }
 
@@ -108,8 +109,8 @@ where
 {
     type Item = StreamElement<Out>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
-        self.project().block.project().operators.poll_next_unpin(cx)
+    fn poll_next(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        self.project().block.project().operators.poll_next(cx)
     }
 }
 
@@ -178,16 +179,14 @@ where
 
 
     info!(
-        "Starting worker for {}: {}",
+        "Starting async worker for {}: {}",
         metadata.coord,
         block.to_string(),
     );
 
-    let thunk = BlockThunkInner::new(block, metadata, tx_end);
+    let thunk = Box::pin(BlockThunkInner::new(block, metadata, tx_end));
 
-    let thunk_pinned = Box::pin(thunk);
-
-    rt.spawn(run_async(thunk_pinned));
+    rt.spawn(run_async(thunk));
 
     // s.spawn_fifo(move |s| run(s, thunk));
 
@@ -207,7 +206,7 @@ fn run<Out: Data, OperatorChain>(
     loop {
         match thunk.next() {
             StreamElement::Terminate => {
-                thunk.end();
+                thunk.tx_end().blocking_send(()).unwrap();
                 break;
             }
             StreamElement::Yield => {
@@ -225,22 +224,23 @@ async fn run_async<Out: Data, OperatorChain>(
 ) where
     OperatorChain: Operator<Out> + Stream<Item=StreamElement<Out>> + 'static,
 {
-    // log::trace!("Running {}", metadata.coord);
+    log::trace!("Async worker started {}", thunk.metadata().coord);
     // let mut catch_panic = CatchPanic::new(move || {
     //     error!("Worker {} has crashed!", thunk.metadata().coord);
     // });
 
+    let tx_end = thunk.tx_end();
+    let mut cnt = 0;
     while let Some(e) = StreamExt::next(&mut thunk).await {
+        cnt += 1;
         match e {
-            StreamElement::Terminate => {
-                break;
-            }
             StreamElement::Yield => {
                 panic!("Async operators should never yield. Return Poll::Pending instead!");
             }
             _ => {} // Nothing to do
         }
     }
-    thunk.end();
+    log::info!("Stopping {} after {} events", thunk.metadata().coord, cnt);
+    tx_end.send(()).await.unwrap();
     // catch_panic.defuse();
 }

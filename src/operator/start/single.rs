@@ -62,6 +62,7 @@ impl<Out: ExchangeData> StartBlockReceiver<Out> for SingleStartBlockReceiver<Out
     }
     
     fn blocking_recv_one(&mut self) -> Option<NetworkMessage<Out>> {
+        log::warn!("USING BLOCKING START BLOCK!");
         let receiver = self.receiver.as_mut().unwrap();
         receiver.blocking_recv_one()
     }

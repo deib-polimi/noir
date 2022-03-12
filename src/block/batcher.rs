@@ -95,6 +95,7 @@ impl<Out: ExchangeData> Batcher<Out> {
                     .and_then(|_| sender.as_mut().start_send(proj.state.take_pending()));
                 match res {
                     Ok(_) => {
+                        *proj.state = FlushState::MustFlush;
                         continue;
                     }
                     Err(_) => {
@@ -105,6 +106,7 @@ impl<Out: ExchangeData> Batcher<Out> {
                 let res = ready!(sender.as_mut().poll_flush(cx));
                 match res {
                     Ok(_) => {
+                        *proj.state = FlushState::Idle;
                         return Poll::Ready(Ok(()))
                     },
                     Err(_) => {

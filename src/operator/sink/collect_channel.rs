@@ -23,6 +23,7 @@ where
     pending_item: Option<Out>,
     #[pin]
     tx: PollSender<Out>,
+    terminated: bool,
 }
 
 impl<Out: ExchangeData, PreviousOperators> Operator<()>
@@ -74,6 +75,9 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut proj = self.project();
+        if *proj.terminated {
+            return Poll::Ready(None);
+        }
         loop {
             if let Some(item) = proj.pending_item.take() {
                 match proj.tx.as_mut().poll_reserve(cx) {
@@ -98,7 +102,10 @@ where
                     continue;
                 }
                 StreamElement::Watermark(w) => StreamElement::Watermark(w),
-                StreamElement::Terminate => StreamElement::Terminate,
+                StreamElement::Terminate => {
+                    *proj.terminated = true;
+                    return Poll::Ready(None);
+                }
                 StreamElement::FlushBatch => StreamElement::FlushBatch,
                 StreamElement::FlushAndRestart => StreamElement::FlushAndRestart,
                 StreamElement::Yield => panic!("Should never receive a yield!"),
@@ -160,6 +167,7 @@ where
                 tx: PollSender::new(tx),
                 metadata: None,
                 pending_item: None,
+                terminated: false,
             })
             .finalize_block();
         rx
@@ -203,8 +211,9 @@ where
                 tx: PollSender::new(tx),
                 metadata: None,
                 pending_item: None,
+                terminated: false,
             })
-            .finalize_block();
+            .finalize_block_async();
         rx
     }
 }

@@ -79,6 +79,7 @@ impl<Out: Data + core::fmt::Debug> futures::Stream for ChannelSource<Out> {
     fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
         match self.state {
             State::Terminated => {
+                log::warn!("Channel source sending terminate");
                 self.state = State::Stopped;
                 return Poll::Ready(Some(StreamElement::Terminate));
             }

@@ -385,6 +385,15 @@ where
             env: old_stream.env,
         }
     }
+
+
+    /// Like `add_block` but without creating a new block. Therefore this closes the current stream
+    /// and just add the last block to the scheduler.
+    pub(crate) fn finalize_block_async(self) {
+        let mut env = self.env.lock();
+        info!("Finalizing block id={}", self.block.id);
+        env.scheduler_mut().add_async_block(self.block);
+    }
 }
 
 impl<Key: DataKey, Out: Data, OperatorChain> KeyedStream<Key, Out, OperatorChain>

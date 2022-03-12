@@ -2,14 +2,12 @@ use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::Duration;
 
 use futures::ready;
 pub(crate) use multiple::*;
 pub(crate) use single::*;
 
 use crate::block::BlockStructure;
-use crate::channel::{RecvTimeoutError, TryRecvError};
 use crate::network::{Coord, NetworkDataIterator, NetworkMessage};
 use crate::operator::iteration::IterationStateLock;
 use crate::operator::source::Source;
@@ -164,86 +162,89 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send + Unpin> future
     type Item = StreamElement<Out>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        let metadata = this.metadata.as_ref().unwrap();
+        let mut proj = self.project();
+        let metadata = proj.metadata.as_ref().unwrap();
 
-        // all the previous blocks sent an end: we're done
-        if this.missing_terminate == 0 {
-            info!("StartBlock for {} has ended", metadata.coord);
-            return Poll::Ready(Some(StreamElement::Terminate));
-        }
-        if this.missing_flush_and_restart == 0 {
-            info!(
-                "StartBlock for {} is emitting flush and restart",
-                metadata.coord
-            );
+        loop {
+            // all the previous blocks sent an end: we're done
+            if *proj.missing_terminate == 0 {
+                info!("StartBlock for {} has ended", metadata.coord);
+                return Poll::Ready(Some(StreamElement::Terminate));
+            }
+            if *proj.missing_flush_and_restart == 0 {
+                info!(
+                    "StartBlock for {} is emitting flush and restart\nMissing {} terminations",
+                    metadata.coord,
+                    proj.missing_terminate
+                );
 
-            this.missing_flush_and_restart = this.num_previous_replicas;
-            this.watermark_frontier.reset();
-            // this iteration has ended, before starting the next one wait for the state update
-            this.wait_for_state = true;
-            this.state_generation += 2;
-            return Poll::Ready(Some(StreamElement::FlushAndRestart));
-        }
+                *proj.missing_flush_and_restart = *proj.num_previous_replicas;
+                proj.watermark_frontier.reset();
+                // this iteration has ended, before starting the next one wait for the state update
+                *proj.wait_for_state = true;
+                *proj.state_generation += 2;
+                return Poll::Ready(Some(StreamElement::FlushAndRestart));
+            }
 
-        // let max_delay = metadata.batch_mode.max_delay();
-
-        if let Some((sender, ref mut inner)) = this.batch_iter {
-            let msg = match inner.next() {
-                None => {
-                    // Current batch is finished
-                    this.batch_iter = None;
-                    return Pin::new(this).poll_next(cx);
-                }
-                Some(item) => {
-                    match item {
-                        StreamElement::Watermark(ts) => {
-                            // update the frontier and return a watermark if necessary
-                            match this.watermark_frontier.update(sender, ts) {
-                                Some(ts) => StreamElement::Watermark(ts), // ts is safe
-                                None => return Pin::new(this).poll_next(cx),
-                            }
-                        }
-                        StreamElement::FlushAndRestart => {
-                            // mark this replica as ended and let the frontier ignore it from now on
-                            this.watermark_frontier.update(sender, timestamp_max());
-                            this.missing_flush_and_restart -= 1;
-                            return Pin::new(this).poll_next(cx);
-                        }
-                        StreamElement::Terminate => {
-                            this.missing_terminate -= 1;
-                            debug!(
-                                "{} received a Terminate, {} more to come",
-                                metadata.coord, this.missing_terminate
-                            );
-                            return Pin::new(this).poll_next(cx);
-                        }
-                        StreamElement::Yield => {
-                            panic!("Start block received Yield! This should never happen!");
-                        }
-                        _ => item,
+            if let Some((sender, ref mut inner)) = proj.batch_iter {
+                let msg = match inner.next() {
+                    None => {
+                        // Current batch is finished
+                        *proj.batch_iter = None;
+                        continue;
                     }
-                }
-            };
+                    Some(item) => {
+                        match item {
+                            StreamElement::Watermark(ts) => {
+                                // update the frontier and return a watermark if necessary
+                                match proj.watermark_frontier.update(*sender, ts) {
+                                    Some(ts) => StreamElement::Watermark(ts), // ts is safe
+                                    None => continue,
+                                }
+                            }
+                            StreamElement::FlushAndRestart => {
+                                // mark this replica as ended and let the frontier ignore it from now on
+                                proj.watermark_frontier.update(*sender, timestamp_max());
+                                *proj.missing_flush_and_restart -= 1;
+                                continue;
+                            }
+                            StreamElement::Terminate => {
+                                *proj.missing_terminate -= 1;
+                                warn!(
+                                    "Start {} received a Terminate, {} more to come",
+                                    metadata.coord, proj.missing_terminate
+                                );
+                                continue;
+                            }
+                            StreamElement::Yield => {
+                                panic!("Start block received Yield! This should never happen!");
+                            }
+                            _ => item,
+                        }
+                    }
+                };
 
-            // the previous iteration has ended, this message refers to the new iteration: we need to be
-            // sure the state is set before we let this message pass
-            if this.wait_for_state {
-                if let Some(lock) = this.state_lock.as_ref() {
-                    lock.wait_for_update(this.state_generation);
+                // the previous iteration has ended, this message refers to the new iteration: we need to be
+                // sure the state is set before we let this message pass
+                if *proj.wait_for_state {
+                    log::warn!("Waiting for state!");
+                    if let Some(lock) = proj.state_lock.as_ref() {
+                        lock.wait_for_update(*proj.state_generation);
+                    }
+                    *proj.wait_for_state = false;
                 }
-                this.wait_for_state = false;
-            }
-            return Poll::Ready(Some(msg));
-        }
+                return Poll::Ready(Some(msg));
 
-        match ready!(Pin::new(&mut this.receiver).poll_recv(cx)) {
-            Some(net_msg) => {
-                this.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
-                this.already_timed_out = false;
-                return Pin::new(this).poll_next(cx);
             }
-            None => todo!("Handle disconnect start channel"),
+
+            match ready!(proj.receiver.as_mut().poll_recv(cx)) {
+                Some(net_msg) => {
+                    *proj.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
+                    *proj.already_timed_out = false;
+                    continue;
+                }
+                None => todo!("Handle disconnect start channel"),
+            }
         }
     }
 }

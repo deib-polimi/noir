@@ -30,7 +30,7 @@ where
     metadata: Option<ExecutionMetadata>,
     next_strategy: NextStrategy<Out, IndexFn>,
     batch_mode: BatchMode,
-    sender_groups: Vec<SenderList>,
+    send_groups: Vec<Vec<ReceiverEndpoint>>,
     #[derivative(Debug = "ignore", Clone(clone_with = "clone_default"))]
     senders: HashMap<ReceiverEndpoint, Batcher<Out>, ahash::RandomState>, // TODO: try to remove the boxes
     feedback_id: Option<BlockId>,
@@ -53,7 +53,7 @@ where
             metadata: None,
             next_strategy,
             batch_mode,
-            sender_groups: Default::default(),
+            send_groups: Default::default(),
             senders: Default::default(),
             feedback_id: None,
             ignore_block_ids: Default::default(),
@@ -83,7 +83,7 @@ where
             match result {
                 Ok(_) => {}
                 Err(e) => {
-                    log::debug!("Couldn't flush {} -> {}", proj.metadata.as_ref().unwrap().coord, coord);
+                    log::error!("Couldn't flush {} -> {}", proj.metadata.as_ref().unwrap().coord, coord);
                     return Poll::Ready(Err(e))
                 }
             }
@@ -113,6 +113,7 @@ where
 
         if *proj.terminating {
             proj.senders.drain();
+            return Poll::Ready(None);
         }
 
 
@@ -126,18 +127,22 @@ where
             StreamElement::Watermark(_)
             | StreamElement::Terminate
             | StreamElement::FlushAndRestart => {
-                for senders in proj.sender_groups.iter() {
-                    for &sender in senders.0.iter() {
+                for endpoints in proj.send_groups.iter() {
+                    for &endpoint in endpoints.iter() {
                         // if this block is the end of the feedback loop it should not forward
                         // `Terminate` since the destination is before us in the termination chain,
                         // and therefore has already left
                         if matches!(message, StreamElement::Terminate)
-                            && Some(sender.coord.block_id) == *proj.feedback_id
+                            && Some(endpoint.coord.block_id) == *proj.feedback_id
                         {
                             continue;
                         }
-                        let sender = proj.senders.get_mut(&sender).unwrap();
+                        let sender = proj.senders.get_mut(&endpoint).unwrap();
                         sender.enqueue(message.clone());
+
+                        if matches!(message, StreamElement::Terminate) {
+                            log::warn!("Queued terminate {} -> {}", proj.metadata.as_ref().unwrap().coord, endpoint.coord);
+                        }
 
                         if matches!(message, StreamElement::FlushAndRestart) {
                             sender.request_flush();
@@ -147,10 +152,10 @@ where
             }
             StreamElement::Item(item) | StreamElement::Timestamped(item, _) => {
                 let index = proj.next_strategy.index(item);
-                for sender in proj.sender_groups.iter() {
-                    let index = index % sender.0.len();
+                for endpoints in proj.send_groups.iter() {
+                    let index = index % endpoints.len();
                     proj.senders
-                        .get_mut(&sender.0[index])
+                        .get_mut(&endpoints[index])
                         .unwrap()
                         .enqueue(message.clone())
                 }
@@ -168,7 +173,7 @@ where
 
         if matches!(to_return, StreamElement::Terminate) {
             let metadata = proj.metadata.as_ref().unwrap();
-            debug!(
+            log::warn!(
                 "EndBlock at {} received Terminate, closing {} channels",
                 metadata.coord,
                 proj.senders.len()
@@ -199,7 +204,7 @@ where
             .filter(|(endpoint, _)| !self.ignore_block_ids.contains(&endpoint.coord.block_id))
             .collect();
         // group the senders based on the strategy
-        self.sender_groups = self
+        self.send_groups = self
             .next_strategy
             .group_senders(&senders, Some(metadata.coord.block_id));
         self.senders = senders
@@ -218,18 +223,18 @@ where
             | StreamElement::FlushAndRestart => {
                 if matches!(message, StreamElement::FlushAndRestart) {
                 }
-                for senders in self.sender_groups.iter() {
-                    for &sender in senders.0.iter() {
+                for endpoints in self.send_groups.iter() {
+                    for &endpoint in endpoints.iter() {
                         // if this block is the end of the feedback loop it should not forward
                         // `Terminate` since the destination is before us in the termination chain,
                         // and therefore has already left
                         if matches!(message, StreamElement::Terminate)
-                            && Some(sender.coord.block_id) == self.feedback_id
+                            && Some(endpoint.coord.block_id) == self.feedback_id
                         {
                             continue;
                         }
-                        let sender = self.senders.get_mut(&sender).unwrap();
-                        match sender.blocking_send_one(message.clone()) {
+                        let endpoint = self.senders.get_mut(&endpoint).unwrap();
+                        match endpoint.blocking_send_one(message.clone()) {
                             Ok(()) => {}
                             Err(FlushError::Disconnected) => panic!(),
                         }
@@ -238,11 +243,11 @@ where
             }
             StreamElement::Item(item) | StreamElement::Timestamped(item, _) => {
                 let index = self.next_strategy.index(item);
-                for sender in self.sender_groups.iter() {
-                    let index = index % sender.0.len();
+                for endpoints in self.send_groups.iter() {
+                    let index = index % endpoints.len();
                     match self
                         .senders
-                        .get_mut(&sender.0[index])
+                        .get_mut(&endpoints[index])
                         .unwrap()
                         .blocking_send_one(message.clone())
                     {
@@ -281,9 +286,9 @@ where
 
     fn structure(&self) -> BlockStructure {
         let mut operator = OperatorStructure::new::<Out, _>("EndBlock");
-        for sender_group in &self.sender_groups {
-            if !sender_group.0.is_empty() {
-                let block_id = sender_group.0[0].coord.block_id;
+        for endpoints in &self.send_groups {
+            if !endpoints.is_empty() {
+                let block_id = endpoints[0].coord.block_id;
                 operator
                     .connections
                     .push(Connection::new::<Out, _>(block_id, &self.next_strategy));
