@@ -1,11 +1,11 @@
 use std::cell::RefCell;
 use std::pin::Pin;
 
-use futures::{Stream, StreamExt, ready};
+use futures::{Stream, StreamExt};
 use tokio::runtime::Handle;
 
 use crate::block::{BlockStructure, InnerBlock};
-use crate::channel::{Sender, Receiver, channel};
+use crate::channel::{Sender, channel};
 use crate::network::Coord;
 use crate::operator::{Data, Operator, StreamElement};
 use crate::scheduler::{ExecutionMetadata, CompletionHandle};

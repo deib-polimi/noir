@@ -3,8 +3,6 @@ use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::thread::{sleep, JoinHandle};
 use std::time::Duration;
 
-use anyhow::{anyhow};
-
 use crate::channel::{Receiver, Sender, SendError, channel};
 use crate::network::remote::{remote_send, CHANNEL_CAPACITY};
 use crate::network::{DemuxCoord, NetworkMessage, ReceiverEndpoint};

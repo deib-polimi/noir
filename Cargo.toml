@@ -125,4 +125,4 @@ name = "coarse_time"
 harness = false
 
 [profile.release]
-lto = "thin"
+# lto = "thin"

@@ -5,9 +5,7 @@ use std::fmt::{Display, Formatter};
 
 use serde::{Deserialize, Serialize};
 
-use crate::block::{JobGraphGenerator, NextStrategy};
-use crate::channel::UnboundedReceiver;
-use crate::network::Coord;
+use crate::block::NextStrategy;
 use crate::operator::{ExchangeData, KeyerFn};
 use crate::stream::BlockId;
 

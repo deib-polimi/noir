@@ -1,7 +1,9 @@
 use parking_lot::Mutex;
+use tokio::runtime::Handle;
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use itertools::Itertools;
 
@@ -296,6 +298,12 @@ impl Scheduler {
         let mut block_structures = vec![];
 
         let rt = tokio::runtime::Builder::new_multi_thread()
+            .thread_name_fn(|| {
+                static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
+                let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+                format!("noir-op-{:02}", id)
+            })
+            .worker_threads(12)
             .enable_time()
             .build()
             .unwrap();
@@ -319,12 +327,10 @@ impl Scheduler {
             job_graph_generator.add_block(coord.block_id, structure);
         }
 
-        rt.block_on(async move {
-            for mut h in join {
-                h.recv().await;
-            }
-        });
-        
+        for mut h in join {
+            h.blocking_recv();
+        }
+            
         network.lock().stop_and_wait();
 
 
