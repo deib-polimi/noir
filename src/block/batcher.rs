@@ -149,7 +149,9 @@ impl<Out: ExchangeData> Batcher<Out> {
 
     fn stage_batch(&mut self) {
         if !self.buffer.is_empty() {
-            let mut batch = Vec::with_capacity((self.buffer.capacity() + self.buffer.len()) / 2);
+            let cap = self.buffer.capacity();
+            let new_cap = if self.buffer.len() < cap / 2 { cap / 2 } else { cap };
+            let mut batch = Vec::with_capacity(new_cap);
             std::mem::swap(&mut self.buffer, &mut batch);
             let message = NetworkMessage::new_batch(batch, self.coord);
             self.stage_message(message)

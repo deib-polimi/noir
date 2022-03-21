@@ -7,7 +7,7 @@ use crate::operator::source::Source;
 use crate::operator::Data;
 use crate::profiler::Stopwatch;
 use crate::runner::spawn_remote_workers;
-use crate::scheduler::Scheduler;
+use crate::scheduler::{Scheduler, NoirJoinHandle};
 use crate::stream::{BlockId, Stream};
 
 lazy_static! {
@@ -104,13 +104,22 @@ impl StreamEnvironment {
     }
 
     /// Start the computation. Await on the returned future to actually start the computation.
-    pub fn execute_async(self) {
+    pub fn execute_async_blocking(self) {
         drop(self.build_time);
         let _stopwatch = Stopwatch::new("execution");
         let mut env = self.inner.lock();
         info!("Starting execution of {} blocks", env.block_count);
         let scheduler = env.scheduler.take().unwrap();
-        scheduler.start_async(env.block_count);
+        scheduler.start_async_blocking(env.block_count);
+    }
+
+    /// Start the computation. Await on the returned future to actually start the computation.
+    pub fn execute_async(self, threads: usize) -> NoirJoinHandle {
+        drop(self.build_time);
+        let mut env = self.inner.lock();
+        info!("Starting execution of {} blocks", env.block_count);
+        let scheduler = env.scheduler.take().unwrap();
+        scheduler.start_async(env.block_count, threads)
     }
 
     /// Get the total number of processing cores in the cluster.

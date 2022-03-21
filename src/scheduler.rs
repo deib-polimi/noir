@@ -1,5 +1,7 @@
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use parking_lot::Mutex;
-use tokio::runtime::Handle;
+use tokio::runtime::{Handle, Runtime};
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -79,6 +81,29 @@ pub(crate) struct Scheduler {
     start_handles: Vec<(Coord, CompletionHandle)>,
     /// The network topology that keeps track of all the connections inside the execution graph.
     network: NetworkTopology,
+}
+
+pub struct NoirJoinHandle {
+    rt: Runtime,
+    join: Vec<Receiver<()>>,
+    network: Arc<Mutex<NetworkTopology>>,
+    block_structures: Vec<(Coord, BlockStructure)>,
+}
+
+impl NoirJoinHandle {
+    pub async fn join(mut self) {
+        let j = self.join.drain(..)
+            .map(|mut rx| async move {rx.recv().await})
+            .collect::<FuturesUnordered<_>>();
+
+        j.count().await;
+        
+        self.network.lock().stop_and_wait();
+        let profiler_results = wait_profiler();
+        Scheduler::log_tracing_data(&self.block_structures, &profiler_results);
+
+        self.rt.shutdown_background();
+    }
 }
 
 impl Scheduler {
@@ -268,11 +293,78 @@ impl Scheduler {
         debug!("Job graph in dot format:\n{}", job_graph);
         let profiler_results = wait_profiler();
 
-        Self::log_tracing_data(block_structures, profiler_results);
+        Self::log_tracing_data(&block_structures, &profiler_results);
     }
 
     /// Start the computation returning the list of handles used to join the workers.
-    pub(crate) fn start_async(mut self, num_blocks: usize) {
+    pub(crate) fn start_async(mut self, num_blocks: usize, threads: usize) -> NoirJoinHandle {
+        self.block_init.iter().for_each(|(c, _)| log::error!("sync block {c}"));
+        assert!(self.block_init.is_empty());
+        info!("Starting scheduler: {:#?}", self.config);
+        self.log_topology();
+
+        assert_eq!(
+            self.block_info.len(),
+            num_blocks,
+            "Some streams do not have a sink attached: {} streams created, but only {} registered",
+            num_blocks,
+            self.block_info.len(),
+        );
+
+        self.build_execution_graph();
+        self.network.finalize_topology();
+        self.network.log_topology();
+
+        let mut join = vec![];
+
+        let network = Arc::new(Mutex::new(self.network));
+
+        let mut job_graph_generator = JobGraphGenerator::new();
+        let mut block_structures = vec![];
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(threads)
+            .thread_name_fn(|| {
+                static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
+                let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+                format!("noir-op-{:02}", id)
+            })
+            .enable_time()
+            .build()
+            .unwrap();
+
+        // start the execution
+        for (coord, init_fn) in self.async_block_init {
+            let block_info = &self.block_info[&coord.block_id];
+            let replicas = block_info.replicas.values().flatten().cloned().collect();
+            let global_id = block_info.global_ids[&coord];
+            let metadata = ExecutionMetadata {
+                coord,
+                replicas,
+                global_id,
+                prev: network.lock().prev(coord),
+                network: network.clone(),
+                batch_mode: block_info.batch_mode,
+            };
+            let (handle, structure) = init_fn(rt.handle(), metadata);
+            join.push(handle.join_handle);
+            block_structures.push((coord, structure.clone()));
+            job_graph_generator.add_block(coord.block_id, structure);
+        }
+        
+        let job_graph = job_graph_generator.finalize();
+        debug!("Job graph in dot format:\n{}", job_graph);
+        
+        NoirJoinHandle {
+            join,
+            rt,
+            network,
+            block_structures,
+        }
+    }
+
+    /// Start the computation returning the list of handles used to join the workers.
+    pub(crate) fn start_async_blocking(mut self, num_blocks: usize) {
         self.block_init.iter().for_each(|(c, _)| log::error!("sync block {c}"));
         assert!(self.block_init.is_empty());
         info!("Starting scheduler: {:#?}", self.config);
@@ -303,7 +395,6 @@ impl Scheduler {
                 let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
                 format!("noir-op-{:02}", id)
             })
-            .worker_threads(12)
             .enable_time()
             .build()
             .unwrap();
@@ -338,7 +429,7 @@ impl Scheduler {
         debug!("Job graph in dot format:\n{}", job_graph);
         let profiler_results = wait_profiler();
 
-        Self::log_tracing_data(block_structures, profiler_results);
+        Self::log_tracing_data(&block_structures, &profiler_results);
     }
 
     /// Get the ids of the previous blocks of a given block in the job graph
@@ -374,14 +465,11 @@ impl Scheduler {
         }
     }
 
-    fn log_tracing_data(structures: Vec<(Coord, BlockStructure)>, profilers: Vec<ProfilerResult>) {
-        let data = TracingData {
-            structures,
-            profilers,
-        };
+    fn log_tracing_data(structures: &Vec<(Coord, BlockStructure)>, profilers: &Vec<ProfilerResult>) {
         debug!(
-            "__noir2_TRACING_DATA__ {}",
-            serde_json::to_string(&data).unwrap()
+            "__noir2_TRACING_DATA__{{\"structures\": {}, \"profilers\": {}}}",
+            serde_json::to_string(&structures).unwrap(),
+            serde_json::to_string(&profilers).unwrap()
         );
     }
 

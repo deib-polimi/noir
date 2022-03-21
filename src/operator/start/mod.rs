@@ -172,10 +172,9 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send + Unpin> future
                 return Poll::Ready(Some(StreamElement::Terminate));
             }
             if *proj.missing_flush_and_restart == 0 {
-                info!(
-                    "StartBlock for {} is emitting flush and restart\nMissing {} terminations",
+                debug!(
+                    "StartBlock for {} is emitting flush and restart",
                     metadata.coord,
-                    proj.missing_terminate
                 );
 
                 *proj.missing_flush_and_restart = *proj.num_previous_replicas;
@@ -227,7 +226,7 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send + Unpin> future
                 // the previous iteration has ended, this message refers to the new iteration: we need to be
                 // sure the state is set before we let this message pass
                 if *proj.wait_for_state {
-                    log::warn!("Waiting for state!");
+                    log::debug!("Waiting for state!");
                     if let Some(lock) = proj.state_lock.as_ref() {
                         lock.wait_for_update(*proj.state_generation);
                     }
@@ -278,7 +277,7 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> Operator<Out>
             return StreamElement::Terminate;
         }
         if self.missing_flush_and_restart == 0 {
-            info!(
+            debug!(
                 "StartBlock for {} is emitting flush and restart",
                 metadata.coord
             );

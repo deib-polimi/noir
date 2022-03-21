@@ -220,7 +220,7 @@ fn run<Out: Data, OperatorChain>(
 }
 
 async fn run_async<Out: Data, OperatorChain>(
-    mut thunk: Pin<Box<BlockThunkInner<Out, OperatorChain>>>
+    thunk: Pin<Box<BlockThunkInner<Out, OperatorChain>>>
 ) where
     OperatorChain: Operator<Out> + Stream<Item=StreamElement<Out>> + 'static,
 {
@@ -229,18 +229,9 @@ async fn run_async<Out: Data, OperatorChain>(
     //     error!("Worker {} has crashed!", thunk.metadata().coord);
     // });
 
+    let coord = thunk.metadata().coord;
     let tx_end = thunk.tx_end();
-    let mut cnt = 0;
-    while let Some(e) = StreamExt::next(&mut thunk).await {
-        cnt += 1;
-        match e {
-            StreamElement::Yield => {
-                panic!("Async operators should never yield. Return Poll::Pending instead!");
-            }
-            _ => {} // Nothing to do
-        }
-    }
-    log::info!("Stopping {} after {} events", thunk.metadata().coord, cnt);
+    let cnt = thunk.fuse().count().await;
+    log::info!("Stopping {} after {} events", coord, cnt);
     tx_end.send(()).await.unwrap();
-    // catch_panic.defuse();
 }
