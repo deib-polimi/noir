@@ -184,7 +184,7 @@ where
         block.to_string(),
     );
 
-    let thunk = Box::pin(BlockThunkInner::new(block, metadata, tx_end));
+    let thunk = BlockThunkInner::new(block, metadata, tx_end);
 
     rt.spawn(run_async(thunk));
 
@@ -220,7 +220,7 @@ fn run<Out: Data, OperatorChain>(
 }
 
 async fn run_async<Out: Data, OperatorChain>(
-    thunk: Pin<Box<BlockThunkInner<Out, OperatorChain>>>
+    thunk: BlockThunkInner<Out, OperatorChain>
 ) where
     OperatorChain: Operator<Out> + Stream<Item=StreamElement<Out>> + 'static,
 {

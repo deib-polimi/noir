@@ -329,6 +329,7 @@ impl Scheduler {
                 let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
                 format!("noir-op-{:02}", id)
             })
+            .on_thread_start(|| coz::thread_init())
             .enable_time()
             .build()
             .unwrap();

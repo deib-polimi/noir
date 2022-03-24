@@ -105,13 +105,15 @@ where
             proj.maps_fn.clear();
         }
         let r = element.map(|(key, value)| {
-            let map_fn = if let Some(map_fn) = proj.maps_fn.get_mut(&key) {
-                map_fn
-            } else {
-                // the key is not present in the hashmap, so this always inserts a new map function
-                let map_fn = proj.init_map.clone();
-                proj.maps_fn.entry(key.clone()).or_insert(map_fn)
-            };
+            let map_fn = proj.maps_fn.entry(key.clone())
+                .or_insert_with(|| proj.init_map.clone());
+            // let map_fn = if let Some(map_fn) = proj.maps_fn.get_mut(&key) {
+            //     map_fn
+            // } else {
+            //     // the key is not present in the hashmap, so this always inserts a new map function
+            //     let map_fn = proj.init_map.clone();
+            //     proj.maps_fn.entry(key.clone()).or_insert(map_fn)
+            // };
 
             let new_value = (map_fn)((&key, value));
             (key, new_value)

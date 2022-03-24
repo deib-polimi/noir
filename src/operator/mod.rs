@@ -53,8 +53,8 @@ pub trait Data: Clone + Send + 'static {}
 impl<T: Clone + Send + 'static> Data for T {}
 
 /// Marker trait for data types that are used to communicate between different blocks.
-pub trait ExchangeData: Data + Serialize + for<'a> Deserialize<'a> {}
-impl<T: Data + Serialize + for<'a> Deserialize<'a> + 'static> ExchangeData for T {}
+pub trait ExchangeData: Data + Serialize + for<'a> Deserialize<'a> + Unpin {}
+impl<T: Data + Serialize + for<'a> Deserialize<'a> + 'static + Unpin> ExchangeData for T {}
 
 /// Marker trait that all the keys should implement.
 pub trait DataKey: Data + Hash + Eq {}

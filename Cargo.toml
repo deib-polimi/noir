@@ -87,6 +87,8 @@ pin-project = "1.0"
 
 nanorand = "0.7"
 
+coz = "*"
+
 [dev-dependencies]
 # for the tests
 tempfile = "3.3"
