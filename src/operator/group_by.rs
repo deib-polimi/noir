@@ -4,7 +4,7 @@ use crate::operator::key_by::KeyBy;
 use crate::operator::{DataKey, ExchangeData, Operator};
 use crate::stream::{KeyValue, KeyedStream, Stream};
 
-use super::AsyncOperator;
+use super::{AsyncOperator, KeyerFn};
 
 impl<Out: ExchangeData, OperatorChain> Stream<Out, OperatorChain>
 where
@@ -37,7 +37,7 @@ where
         keyer: Keyer,
     ) -> KeyedStream<Key, Out, impl Operator<KeyValue<Key, Out>>>
     where
-        Keyer: Fn(&Out) -> Key + Send + Clone + 'static,
+        Keyer: KeyerFn<Key, Out>,
     {
         let next_strategy = NextStrategy::group_by(keyer.clone());
         let new_stream = self
@@ -57,7 +57,7 @@ where
         keyer: Keyer,
     ) -> KeyedStream<Key, Out, impl AsyncOperator<KeyValue<Key, Out>>>
     where
-        Keyer: Fn(&Out) -> Key + Send + Clone + 'static,
+        Keyer: KeyerFn<Key, Out>,
     {
         let next_strategy = NextStrategy::group_by(keyer.clone());
         let new_stream = self

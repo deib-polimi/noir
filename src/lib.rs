@@ -29,7 +29,7 @@ use crate::network::Coord;
 use crate::profiler::ProfilerResult;
 
 pub(crate) mod block;
-pub(crate) mod channel;
+pub mod channel;
 pub mod config;
 pub(crate) mod environment;
 pub(crate) mod network;

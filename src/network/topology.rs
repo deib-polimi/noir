@@ -19,7 +19,7 @@ use crate::stream::BlockId;
 
 use super::NetworkMessage;
 
-const CHANNEL_CAPACITY: usize = 16;
+const CHANNEL_CAPACITY: usize = 64;
 
 /// This struct is used to index inside the `typemap` with the `NetworkReceiver`s.
 struct ReceiverKey<In: ExchangeData>(PhantomData<In>);
@@ -227,10 +227,7 @@ impl NetworkTopology {
         }
         self.used_receivers.insert(receiver_endpoint);
 
-        if !self.receivers.contains::<ReceiverKey<T>>() {
-            self.receivers.insert::<ReceiverKey<T>>(Default::default());
-        }
-        let entry = self.receivers.get_mut::<ReceiverKey<T>>().unwrap();
+        let entry = self.receivers.entry::<ReceiverKey<T>>().or_insert_with(Default::default);
         // if the channel has not been registered yet, register it
         if !entry.contains_key(&receiver_endpoint) {
             self.register_channel::<T>(receiver_endpoint);

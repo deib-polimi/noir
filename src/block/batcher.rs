@@ -6,7 +6,7 @@ use std::time::Duration;
 use coarsetime::Instant;
 
 use futures::{ready, SinkExt, Sink};
-use crate::network::{Coord, NetworkMessage, NetworkSender};
+use crate::network::{Coord, NetworkMessage, NetworkSender, ReceiverEndpoint};
 use crate::operator::{ExchangeData, StreamElement};
 
 /// Which policy to use for batching the messages before sending them.
@@ -53,10 +53,8 @@ impl<T> FlushState<T> {
 /// A `Batcher` wraps a sender and sends the messages in batches to reduce the network overhead.
 ///
 /// Internally it spawns a new task to handle the timeouts and join it at the end.
-#[pin_project::pin_project]
 pub(crate) struct Batcher<Out: ExchangeData> {
     /// Sender used to communicate with the other replicas
-    #[pin]
     remote_sender: NetworkSender<Out>,
     /// Batching mode used by the batcher
     mode: BatchMode,
@@ -82,31 +80,32 @@ impl<Out: ExchangeData> Batcher<Out> {
         }
     }
     
-    pub fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), FlushError>> {
-        let proj = self.project();
-        let mut sender = proj.remote_sender;
-        
+    pub fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), FlushError>> {        
         // TODO: Could possibly be done better
         loop {
-            if matches!(proj.state, FlushState::Idle) {
+            if matches!(self.state, FlushState::Idle) {
                 return Poll::Ready(Ok(()))
-            } else if matches!(proj.state, FlushState::Pending(_)) {
-                let res = ready!(sender.as_mut().poll_ready(cx))
-                    .and_then(|_| sender.as_mut().start_send(proj.state.take_pending()));
+            } else if matches!(self.state, FlushState::Pending(_)) {
+                let res = ready!(self.remote_sender.poll_ready_unpin(cx))
+                    .and_then(|_| {
+                        let q = self.state.take_pending();
+                        self.remote_sender.start_send_unpin(q)
+                    });
                 match res {
                     Ok(_) => {
-                        *proj.state = FlushState::MustFlush;
+                        self.state = FlushState::MustFlush;
                         continue;
                     }
                     Err(_) => {
                         return Poll::Ready(Err(FlushError::Disconnected))
                     }
                 }
-            } else if matches!(proj.state, FlushState::MustFlush) {
-                let res = ready!(sender.as_mut().poll_flush(cx));
+            } else if matches!(self.state, FlushState::MustFlush) {
+                let res = ready!(self.remote_sender.poll_flush_unpin(cx));
                 match res {
                     Ok(_) => {
-                        *proj.state = FlushState::Idle;
+                        log::warn!("flushed\t{}", &self.remote_endpoint());
+                        self.state = FlushState::Idle;
                         return Poll::Ready(Ok(()))
                     },
                     Err(_) => {
@@ -120,25 +119,33 @@ impl<Out: ExchangeData> Batcher<Out> {
     }
 
     /// Put a message in the batch queue, it won't be sent immediately.
-    pub fn enqueue(&mut self, msg: StreamElement<Out>) {
+    #[must_use]
+    pub fn enqueue(&mut self, msg: StreamElement<Out>) -> bool {
         assert!(self.state.is_idle());
         match self.mode {
             BatchMode::Adaptive(n, max_delay) => {
                 self.buffer.push(msg);
                 let timeout_elapsed = self.last_send.elapsed() > max_delay.into();
                 if self.buffer.len() >= n.get() || timeout_elapsed {
-                    self.stage_batch()
+                    self.stage_batch();
+                    true
+                } else {
+                    false
                 }
             }
             BatchMode::Fixed(n) => {
                 self.buffer.push(msg);
                 if self.buffer.len() >= n.get() {
-                    self.stage_batch()
+                    self.stage_batch();
+                    true
+                } else {
+                    false
                 }
             }
             BatchMode::Single => {
                 let msg = NetworkMessage::new_single(msg, self.coord);
                 self.stage_message(msg);
+                true
             }
         }
     }
@@ -173,6 +180,10 @@ impl<Out: ExchangeData> Batcher<Out> {
 
     pub fn coord(&self) -> Coord {
         self.coord
+    }
+
+    pub fn remote_endpoint(&self) -> ReceiverEndpoint {
+        self.remote_sender.receiver_endpoint
     }
 }
 

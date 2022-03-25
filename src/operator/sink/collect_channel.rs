@@ -9,7 +9,7 @@ use crate::operator::{ExchangeData, ExchangeDataKey, Operator, StreamElement, As
 use crate::scheduler::ExecutionMetadata;
 use crate::stream::{KeyValue, KeyedStream, Stream};
 
-use crate::channel::{Sender, Receiver, PollSender, channel};
+use crate::channel::{Receiver, PollSender, channel};
 
 #[pin_project::pin_project]
 #[derive(Debug)]

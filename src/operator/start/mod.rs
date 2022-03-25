@@ -8,6 +8,7 @@ pub(crate) use multiple::*;
 pub(crate) use single::*;
 
 use crate::block::BlockStructure;
+use crate::coord;
 use crate::network::{Coord, NetworkDataIterator, NetworkMessage};
 use crate::operator::iteration::IterationStateLock;
 use crate::operator::source::Source;
@@ -79,11 +80,6 @@ pub(crate) struct StartBlock<Out: ExchangeData, Receiver: StartBlockReceiver<Out
     /// `missing_flush_and_restart`.
     num_previous_replicas: usize,
 
-    /// Whether the previous blocks timed out and the last batch has been flushed.
-    ///
-    /// The next time `next()` is called it will not wait the timeout asked by the batch mode.
-    already_timed_out: bool,
-
     /// The current frontier of the watermarks from the previous replicas.
     watermark_frontier: WatermarkFrontier,
 
@@ -139,8 +135,6 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> StartBlock<Out
             missing_flush_and_restart: Default::default(),
             num_previous_replicas: 0,
 
-            already_timed_out: Default::default(),
-
             watermark_frontier: Default::default(),
 
             wait_for_state: Default::default(),
@@ -161,6 +155,8 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Strea
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let metadata = self.metadata.as_ref().unwrap().clone();
+
+        log::warn!("start_polled\t{}\t{}", coord!(self), std::thread::current().name().unwrap());
 
         loop {
             // all the previous blocks sent an end: we're done
@@ -220,6 +216,9 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Strea
                     }
                 };
 
+                let msg_q = msg.take();
+                log::warn!("start\t{}: {:?}", coord!(self), msg_q);
+
                 // the previous iteration has ended, this message refers to the new iteration: we need to be
                 // sure the state is set before we let this message pass
                 if self.wait_for_state {
@@ -236,7 +235,6 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Strea
             match ready!(Pin::new(&mut self.receiver).poll_recv(cx)) {
                 Some(net_msg) => {
                     self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
-                    self.already_timed_out = false;
                     continue;
                 }
                 None => todo!("Handle disconnect start channel"),
@@ -341,7 +339,6 @@ impl<Out: ExchangeData + Unpin, Receiver: StartBlockReceiver<Out> + Send> Operat
         match self.receiver.blocking_recv_one() {
             Some(net_msg) => {
                 self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
-                self.already_timed_out = false;
                 return self.next();
             }
             None => todo!("Handle disconnect start channel"),

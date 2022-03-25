@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::task::{Poll, Context};
 use std::time::Duration;
 
-use futures::ready;
+use futures::{ready, StreamExt};
 
 use crate::block::{
     BatchMode, Batcher, BlockStructure, Connection, NextStrategy, OperatorStructure, SenderList,
@@ -17,7 +17,6 @@ use crate::stream::BlockId;
 
 use super::AsyncOperator;
 
-#[pin_project::pin_project(project = EndBlockProj)]
 #[derive(Derivative)]
 #[derivative(Clone, Debug)]
 pub struct EndBlock<Out: ExchangeData, OperatorChain, IndexFn>
@@ -25,14 +24,12 @@ where
     IndexFn: KeyerFn<usize, Out>,
     OperatorChain: Operator<Out>,
 {
-    #[pin]
     prev: OperatorChain,
     metadata: Option<ExecutionMetadata>,
     next_strategy: NextStrategy<Out, IndexFn>,
     batch_mode: BatchMode,
-    send_groups: Vec<Vec<ReceiverEndpoint>>,
     #[derivative(Debug = "ignore", Clone(clone_with = "clone_default"))]
-    senders: HashMap<ReceiverEndpoint, Batcher<Out>, ahash::RandomState>, // TODO: try to remove the boxes
+    senders: Senders<Out>,
     feedback_id: Option<BlockId>,
     ignore_block_ids: Vec<BlockId>,
     flush_requested: bool,
@@ -54,7 +51,6 @@ where
             metadata: None,
             next_strategy,
             batch_mode,
-            send_groups: Default::default(),
             senders: Default::default(),
             feedback_id: None,
             ignore_block_ids: Default::default(),
@@ -68,33 +64,12 @@ where
     /// This will avoid this block from sending `Terminate` in the feedback loop, the destination
     /// should be already gone.
     pub(crate) fn mark_feedback(&mut self, block_id: BlockId) {
+        todo!();
         self.feedback_id = Some(block_id);
     }
 
     pub(crate) fn ignore_destination(&mut self, block_id: BlockId) {
         self.ignore_block_ids.push(block_id);
-    }
-}
-impl<Out: ExchangeData, OperatorChain, IndexFn> EndBlockProj<'_, Out, OperatorChain, IndexFn>
-where
-    IndexFn: KeyerFn<usize, Out>,
-    OperatorChain: Operator<Out>,
-{
-    fn poll_all_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), FlushError>> {
-        for sender in self.senders.values_mut() {
-            let coord = sender.coord();
-            let sender = Pin::new(sender);
-            let result = ready!(sender.poll_ready(cx));
-
-            match result {
-                Ok(_) => {}
-                Err(e) => {
-                    log::error!("Couldn't flush {} -> {}", self.metadata.as_ref().unwrap().coord, coord);
-                    return Poll::Ready(Err(e))
-                }
-            }
-        }
-        Poll::Ready(Ok(()))
     }
 }
 
@@ -106,10 +81,10 @@ where
 {
     type Item = StreamElement<()>;
 
-    fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut proj = self.project();
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
         loop {
-            match proj.poll_all_ready(cx) {
+            match this.senders.poll_ready(cx) {
                 Poll::Ready(Ok(_)) => {}
                 Poll::Ready(Err(e)) => {
                     panic!("Broken channel {e}"); // TODO: Check
@@ -117,93 +92,48 @@ where
                 Poll::Pending => return Poll::Pending,
             }
 
-            if *proj.terminating {
-                proj.senders.drain();
+            if this.terminating {
+                this.senders.close();
                 return Poll::Ready(None);
             }
 
-
-            let message = match proj.prev.as_mut().poll_next(cx) {
-                Poll::Ready(m) => {
-                    *proj.flush_requested = false;
-                    m
-                }
-                Poll::Pending if *proj.flush_requested => {
-                    return Poll::Pending;
-                }
+            let message = match this.prev.poll_next_unpin(cx) {
+                Poll::Ready(m) => m,
                 Poll::Pending => {
-                    for sender in proj.senders.values_mut() {
-                        sender.request_flush();
-                    }
-                    *proj.flush_requested = true;
+                    this.senders.flush_all();
                     continue;
                 }
             };
 
             let message = message.unwrap_or_else(|| StreamElement::Terminate); // TODO: Change
-
             let to_return = message.take();
 
+            log::warn!("end\t{}: {:?}", coord!(this), &to_return);
+
             match &message {
-                StreamElement::Watermark(_)
-                | StreamElement::Terminate
-                | StreamElement::FlushAndRestart => {
-                    for endpoints in proj.send_groups.iter() {
-                        for &endpoint in endpoints.iter() {
-                            // if this block is the end of the feedback loop it should not forward
-                            // `Terminate` since the destination is before us in the termination chain,
-                            // and therefore has already left
-                            if matches!(message, StreamElement::Terminate)
-                                && Some(endpoint.coord.block_id) == *proj.feedback_id
-                            {
-                                continue;
-                            }
-                            let sender = proj.senders.get_mut(&endpoint).unwrap();
-                            sender.enqueue(message.clone());
-
-                            if matches!(message, StreamElement::Terminate) {
-                                log::warn!("Queued terminate {} -> {}", proj.metadata.as_ref().unwrap().coord, endpoint.coord);
-                            }
-
-                            if matches!(message, StreamElement::FlushAndRestart) {
-                                sender.request_flush();
-                            }
-                        }
-                    }
+                StreamElement::Watermark(_) => 
+                    this.senders.enqueue_all_groups(message.clone()),
+                StreamElement::FlushAndRestart => {
+                    this.senders.enqueue_all_groups(message.clone());
+                    this.senders.flush_all();
+                }
+                StreamElement::Terminate => {
+                    log::warn!("Broadcasting Terminate {}", this.metadata.as_ref().unwrap().coord);
+                    this.senders.broadcast_terminate();
+                    this.terminating = true;
                 }
                 StreamElement::Item(item) | StreamElement::Timestamped(item, _) => {
-                    let index = proj.next_strategy.index(item);
-                    for endpoints in proj.send_groups.iter() {
-                        let index = index % endpoints.len();
-                        proj.senders
-                            .get_mut(&endpoints[index])
-                            .unwrap()
-                            .enqueue(message.clone())
-                    }
+                    let index = this.next_strategy.index(item);
+                    this.senders.enqueue_indexed(index, message);
                 }
                 StreamElement::Yield => {
-                    log::error!("{} Received Yield from downstream", coord!(proj));
+                    log::error!("{} Received Yield from downstream", coord!(this));
                 }
                 StreamElement::FlushBatch => {
-                    log::debug!("{} Received FlushBatch from downstream, marking for flush", coord!(proj));
-                    for sender in proj.senders.values_mut() {
-                        sender.request_flush();
-                    }
+                    log::debug!("{} Received FlushBatch from downstream, marking for flush", coord!(this));
+                    this.senders.flush_all();
                 }
             };
-
-            if matches!(to_return, StreamElement::Terminate) {
-                let metadata = proj.metadata.as_ref().unwrap();
-                log::warn!(
-                    "EndBlock at {} received Terminate, closing {} channels",
-                    metadata.coord,
-                    proj.senders.len()
-                );
-                for sender in proj.senders.values_mut() {
-                    sender.request_flush();
-                }
-                *proj.terminating = true;
-            }
 
             return Poll::Ready(Some(to_return));
         }
@@ -226,76 +156,18 @@ where
             .filter(|(endpoint, _)| !self.ignore_block_ids.contains(&endpoint.coord.block_id))
             .collect();
         // group the senders based on the strategy
-        self.send_groups = self
+        self.senders.set_send_groups(self
             .next_strategy
-            .group_senders(&senders, Some(metadata.coord.block_id));
-        self.senders = senders
+            .group_senders(&senders, Some(metadata.coord.block_id)));
+        self.senders.set_senders(senders
             .into_iter()
             .map(|(coord, sender)| (coord, Batcher::new(sender, self.batch_mode, metadata.coord)))
-            .collect();
+            .collect());
         self.metadata = Some(metadata);
     }
 
     fn next(&mut self) -> StreamElement<()> {
-        let message = self.prev.next();
-        let to_return = message.take();
-        match &message {
-            StreamElement::Watermark(_)
-            | StreamElement::Terminate
-            | StreamElement::FlushAndRestart => {
-                if matches!(message, StreamElement::FlushAndRestart) {
-                }
-                for endpoints in self.send_groups.iter() {
-                    for &endpoint in endpoints.iter() {
-                        // if this block is the end of the feedback loop it should not forward
-                        // `Terminate` since the destination is before us in the termination chain,
-                        // and therefore has already left
-                        if matches!(message, StreamElement::Terminate)
-                            && Some(endpoint.coord.block_id) == self.feedback_id
-                        {
-                            continue;
-                        }
-                        let endpoint = self.senders.get_mut(&endpoint).unwrap();
-                        match endpoint.blocking_send_one(message.clone()) {
-                            Ok(()) => {}
-                            Err(FlushError::Disconnected) => panic!(),
-                        }
-                    }
-                }
-            }
-            StreamElement::Item(item) | StreamElement::Timestamped(item, _) => {
-                let index = self.next_strategy.index(item);
-                for endpoints in self.send_groups.iter() {
-                    let index = index % endpoints.len();
-                    match self
-                        .senders
-                        .get_mut(&endpoints[index])
-                        .unwrap()
-                        .blocking_send_one(message.clone())
-                    {
-                        Ok(()) => {}
-                        Err(FlushError::Disconnected) => panic!(),
-                    }
-                }
-            }
-            StreamElement::Yield => {
-                log::debug!("{} BLOCKING END: Received Yield from downstream, marking for flush", coord!(self));
-            }
-            StreamElement::FlushBatch => {
-                log::debug!("{} BLOCKING END: Received FlushBatch from downstream, marking for flush", coord!(self));
-            }
-        };
-
-        if matches!(to_return, StreamElement::Terminate) {
-            let metadata = self.metadata.as_ref().unwrap();
-            debug!(
-                "EndBlock at {} received Terminate, closing {} channels",
-                metadata.coord,
-                self.senders.len()
-            );
-            self.senders.drain();
-        }
-        to_return
+        todo!();
     }
 
     fn to_string(&self) -> String {
@@ -308,7 +180,7 @@ where
 
     fn structure(&self) -> BlockStructure {
         let mut operator = OperatorStructure::new::<Out, _>("EndBlock");
-        for endpoints in &self.send_groups {
+        for endpoints in self.senders.send_groups() {
             if !endpoints.is_empty() {
                 let block_id = endpoints[0].coord.block_id;
                 operator
@@ -325,4 +197,104 @@ where
     T: Default,
 {
     T::default()
+}
+
+struct Senders<Out: ExchangeData> {
+    send_groups: Vec<Vec<ReceiverEndpoint>>,
+    senders: HashMap<ReceiverEndpoint, Batcher<Out>, ahash::RandomState>,
+    pending_flush: Vec<ReceiverEndpoint>,
+}
+
+macro_rules! enqueue {
+    ($self:ident, $endpoint:expr, $msg:expr) => {
+        if $self.senders.get_mut($endpoint).unwrap().enqueue($msg) {
+            $self.pending_flush.push(*$endpoint);
+        }
+    }
+}
+
+impl<Out: ExchangeData> Senders<Out> {
+    // fn enqueue(&mut self, endpoint: &ReceiverEndpoint, msg: StreamElement<Out>) {
+    //     if self.senders.get_mut(endpoint).unwrap().enqueue(msg) {
+    //         self.pending_flush.push(*endpoint);
+    //     }
+    // }
+
+    fn enqueue_all_groups(&mut self, msg: StreamElement<Out>) {
+        for endpoint in self.send_groups.iter().flat_map(|g| g.iter()) {
+            enqueue!(self, endpoint, msg.clone());
+        }
+    }
+
+    fn enqueue_indexed(&mut self, idx: usize, msg: StreamElement<Out>) {
+        for endpoint in self.send_groups.iter().map(|group| &group[idx % group.len()]) {
+            enqueue!(self, endpoint, msg.clone());
+        }
+    }
+
+    fn broadcast_terminate(&mut self) {
+        // MUST FLUSH
+        for endpoint in self.send_groups.iter().flat_map(|g| g.iter()) {
+            // TODO: Check feedback
+            enqueue!(self, endpoint, StreamElement::Terminate);
+        }
+        self.flush_all();
+    }
+
+    fn flush_all(&mut self) {
+        self.senders.values_mut().for_each(|s| s.request_flush());
+        self.pending_flush.extend(self.senders.keys().copied());
+    }
+
+    fn close(&mut self) {
+        assert!(self.pending_flush.is_empty());
+        self.senders.drain();
+    }
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), FlushError>> {
+        let mut i = 0;
+        while i < self.pending_flush.len() {
+            let sender = self.senders.get_mut(&self.pending_flush[i]).unwrap();
+            let coord = sender.coord();
+
+            match Pin::new(sender).poll_ready(cx) {
+                Poll::Ready(Ok(_)) => {
+                    self.pending_flush.swap_remove(i);
+                }
+                Poll::Ready(Err(e)) => {
+                    log::error!("Couldn't flush channel, destination: {}", coord);
+                    return Poll::Ready(Err(e))
+                }
+                Poll::Pending => {
+                    i += 1;
+                }
+            }
+        }
+        if self.pending_flush.is_empty() {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    }
+
+    /// Set the senders's send groups.
+    fn set_send_groups(&mut self, send_groups: Vec<Vec<ReceiverEndpoint>>) {
+        self.send_groups = send_groups;
+    }
+
+    /// Set the senders's senders.
+    fn set_senders(&mut self, senders: HashMap<ReceiverEndpoint, Batcher<Out>, ahash::RandomState>) {
+        self.senders = senders;
+    }
+
+    /// Get a reference to the senders's send groups.
+    fn send_groups(&self) -> &[Vec<ReceiverEndpoint>] {
+        self.send_groups.as_ref()
+    }
+}
+
+impl<Out: ExchangeData> Default for Senders<Out> {
+    fn default() -> Self {
+        Self { send_groups: Default::default(), senders: Default::default(), pending_flush: Default::default() }
+    }
 }

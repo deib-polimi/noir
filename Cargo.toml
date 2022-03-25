@@ -70,7 +70,7 @@ chrono = "0.4"
 # Faster monotonic clock using libc's CLOCK_MONOTONIC_COARSE
 coarsetime = "0.1"
 
-tokio = { version = "1", features = ["sync", "rt"] }
+tokio = { version = "1", features = ["sync", "rt-multi-thread"] }
 tokio-util = "0.7"
 futures = "0.3"
 
@@ -86,6 +86,8 @@ thiserror = "1.0"
 pin-project = "1.0"
 
 nanorand = "0.7"
+
+indexmap = "1.8"
 
 coz = "*"
 

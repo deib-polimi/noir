@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use futures::Sink;
+use futures::{Sink, SinkExt};
 use nanorand::Rng;
 
 use crate::channel::{channel, Receiver, SelectResult, Sender, PollSender};
@@ -36,25 +36,22 @@ pub(crate) fn remote_channel<In: ExchangeData>(receiver_endpoint: ReceiverEndpoi
 /// connection internally this points to the multiplexer that handles the remote channel.
 #[derive(Clone, Derivative)]
 #[derivative(Debug)]
-#[pin_project::pin_project]
 pub(crate) struct NetworkSender<Out: ExchangeData> {
     /// The ReceiverEndpoint of the recipient.
     pub receiver_endpoint: ReceiverEndpoint,
     /// The generic sender that will send the message either locally or remotely.
     #[derivative(Debug = "ignore")]
-    #[pin]
     sender: NetworkSenderImpl<Out>,
 }
 
 /// The internal sender that sends either to a local in-memory channel, or to a remote channel using
 /// a multiplexer.
 #[derive(Clone)]
-#[pin_project::pin_project(project = NetworkSenderProj)]
 pub(crate) enum NetworkSenderImpl<Out: ExchangeData> {
     /// The channel is local, use an in-memory channel.
-    Local(#[pin] PollSender<NetworkMessage<Out>>),
+    Local(PollSender<NetworkMessage<Out>>),
     /// The channel is remote, use the multiplexer.
-    Remote(#[pin] MultiplexingSender<Out>),
+    Remote(MultiplexingSender<Out>),
 }
 
 impl<Out: ExchangeData> NetworkSender<Out> {
@@ -87,30 +84,30 @@ impl<T: ExchangeData> Sink<NetworkMessage<T>> for NetworkSender<T> {
     type Error = tokio_util::sync::PollSendError<NetworkMessage<T>>;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match self.project().sender.project() {
-            NetworkSenderProj::Local(sender) => sender.poll_ready(cx),
-            NetworkSenderProj::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
+        match &mut self.get_mut().sender {
+            NetworkSenderImpl::Local(sender) => sender.poll_ready_unpin(cx),
+            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
         }
     }
 
     fn start_send(self: Pin<&mut Self>, item: NetworkMessage<T>) -> Result<(), Self::Error> {
-        match self.project().sender.project() {
-            NetworkSenderProj::Local(sender) => sender.start_send(item),
-            NetworkSenderProj::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
+        match &mut self.get_mut().sender {
+            NetworkSenderImpl::Local(sender) => sender.start_send_unpin(item),
+            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
         }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match self.project().sender.project() {
-            NetworkSenderProj::Local(sender) => sender.poll_flush(cx),
-            NetworkSenderProj::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
+        match &mut self.get_mut().sender {
+            NetworkSenderImpl::Local(sender) => sender.poll_flush_unpin(cx),
+            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
         }
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match self.project().sender.project() {
-            NetworkSenderProj::Local(sender) => sender.poll_close(cx),
-            NetworkSenderProj::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
+        match &mut self.get_mut().sender {
+            NetworkSenderImpl::Local(sender) => sender.poll_close_unpin(cx),
+            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
         }
     }
 }
@@ -125,7 +122,6 @@ impl<T: ExchangeData> Sink<NetworkMessage<T>> for NetworkSender<T> {
 /// Internally it contains a in-memory sender-receiver pair, to get the local sender call
 /// `.sender()`. When the socket will be bound an task will be spawned, it will bind the
 /// socket and send to the same in-memory channel the received messages.
-#[pin_project::pin_project]
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub(crate) struct NetworkReceiver<In: ExchangeData> {
@@ -133,7 +129,6 @@ pub(crate) struct NetworkReceiver<In: ExchangeData> {
     pub receiver_endpoint: ReceiverEndpoint,
     /// The actual receiver where the users of this struct will wait upon.
     #[derivative(Debug = "ignore")]
-    #[pin]
     receiver: Receiver<NetworkMessage<In>>,
 }
 
@@ -142,7 +137,7 @@ impl<Out: ExchangeData> NetworkReceiver<Out> {
         self: Pin<&'_ mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<NetworkMessage<Out>>> {
-        let mut this = self.project();
+        let this = self.get_mut();
         let r = this.receiver.poll_recv(cx);
         match r {
             Poll::Ready(Some(msg)) => {

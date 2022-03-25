@@ -65,8 +65,8 @@ pub trait ExchangeDataKey: DataKey + ExchangeData {}
 impl<T: DataKey + ExchangeData> ExchangeDataKey for T {}
 
 /// Marker trait for the function that extracts the key out of a type.
-pub trait KeyerFn<Key, Out>: Fn(&Out) -> Key + Clone + Send + 'static {}
-impl<Key, Out, T: Fn(&Out) -> Key + Clone + Send + 'static> KeyerFn<Key, Out> for T {}
+pub trait KeyerFn<Key, Out>: Fn(&Out) -> Key + Clone + Send + Unpin + 'static {}
+impl<Key, Out, T: Fn(&Out) -> Key + Clone + Send + Unpin + 'static> KeyerFn<Key, Out> for T {}
 
 /// When using timestamps and watermarks, this type expresses the timestamp of a message or of a
 /// watermark.
@@ -140,12 +140,12 @@ pub trait Operator<Out: Data>: Clone + Send {
     fn structure(&self) -> BlockStructure;
 }
 
-pub trait AsyncOperator<T>: Operator<T> + futures::Stream<Item=StreamElement<T>>
+pub trait AsyncOperator<T>: Operator<T> + futures::Stream<Item=StreamElement<T>> + Unpin
 where T: Data + ?Sized {}
 
 impl<T, Out> AsyncOperator<Out> for T
 where
-    T: Operator<Out> + futures::Stream<Item=StreamElement<Out>>,
+    T: Operator<Out> + futures::Stream<Item=StreamElement<Out>> + Unpin,
     Out: Data
 {}
 
