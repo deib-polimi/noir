@@ -5,8 +5,10 @@ use std::time::Duration;
 
 use coarsetime::Instant;
 
-use futures::{ready, SinkExt, Sink};
-use crate::network::{Coord, NetworkMessage, NetworkSender, ReceiverEndpoint};
+use futures::sink::Send;
+use futures::{ready, SinkExt, Sink, Future};
+use tokio_util::sync::ReusableBoxFuture;
+use crate::network::{Coord, NetworkMessage, NetworkSender, ReceiverEndpoint, NetworkSendError};
 use crate::operator::{ExchangeData, StreamElement};
 
 /// Which policy to use for batching the messages before sending them.
@@ -28,25 +30,59 @@ pub enum BatchMode {
     Single,
 }
 
-enum FlushState<T> {
-    Idle,
-    Pending(T),
-    MustFlush,
+enum FlushState<T: ExchangeData> {
+    Idle(NetworkSender<T>),
+    Staged,
+    Closed,
 }
 
-impl<T> FlushState<T> {
+impl<T: ExchangeData> FlushState<T> {
     pub fn is_idle(&self) -> bool {
         match &self {
-            FlushState::Idle => true,
+            FlushState::Idle(_) => true,
             _ => false,
         }
     }
-    pub fn take_pending(&mut self) -> T {
+
+    pub fn take(&mut self) -> Self {
+        std::mem::replace(self, Self::Closed)
+    }
+
+    pub fn take_sender(&mut self) -> NetworkSender<T> {
         let prev = std::mem::replace(self, FlushState::MustFlush);
         match prev {
-            FlushState::Pending(t) => t,
-            _ => panic!("Trying to take from invalid FlushState")
+            FlushState::Idle(t) => t,
+            _ => panic!("Trying to take sender from invalid FlushState")
         }
+    }
+
+
+    pub fn clone_sender(&mut self) -> NetworkSender<T> {
+        match self {
+            FlushState::Idle(s) => s.clone(),
+            _ => panic!("Trying to clone batcher sender, but batcher is not idle!"),
+        }
+    }
+    // pub fn take_pending(&mut self) -> T {
+    //     let prev = std::mem::replace(self, FlushState::MustFlush);
+    //     match prev {
+    //         FlushState::Pending(t) => t,
+    //         _ => panic!("Trying to take from invalid FlushState")
+    //     }
+    // }
+}
+
+// By reusing the same async fn for both `Some` and `None`, we make sure every future passed to
+// ReusableBoxFuture has the same underlying type, and hence the same size and alignment.
+async fn make_send_future<T: ExchangeData>(
+    data: Option<(NetworkSender<T>, NetworkMessage<T>)>,
+) -> Result<NetworkSender<T>, NetworkSendError<T>> {
+    match data {
+        Some((mut sender, msg)) => sender
+                .send(msg)
+                .await
+                .map(move |_| sender),
+        None => unreachable!("this future should not be pollable in this state"),
     }
 }
 
@@ -55,7 +91,7 @@ impl<T> FlushState<T> {
 /// Internally it spawns a new task to handle the timeouts and join it at the end.
 pub(crate) struct Batcher<Out: ExchangeData> {
     /// Sender used to communicate with the other replicas
-    remote_sender: NetworkSender<Out>,
+    // remote_sender: Option<NetworkSender<Out>>,
     /// Batching mode used by the batcher
     mode: BatchMode,
     /// Buffer used to keep messages ready to be sent
@@ -65,57 +101,55 @@ pub(crate) struct Batcher<Out: ExchangeData> {
     /// The coordinate of this block, used for marking the sender of the batch.
     coord: Coord,
 
-    state: FlushState<NetworkMessage<Out>>,
+    pending: ReusableBoxFuture<'static, Result<NetworkSender<Out>, NetworkSendError<Out>>>,
+
+    state: FlushState<Out>,
+
+    remote_endpoint: ReceiverEndpoint,
 }
 
 impl<Out: ExchangeData> Batcher<Out> {
     pub fn new(remote_sender: NetworkSender<Out>, mode: BatchMode, coord: Coord) -> Self {
+        let remote_endpoint = remote_sender.receiver_endpoint;
         Self {
-            remote_sender,
+            // remote_sender: Some(remote_sender),
             mode,
             buffer: Default::default(),
             last_send: Instant::now(),
             coord,
-            state: FlushState::Idle,
+            pending: ReusableBoxFuture::new(make_send_future(None)),
+            state: FlushState::Idle(remote_sender),
+            remote_endpoint,
         }
     }
     
     pub fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), FlushError>> {        
         // TODO: Could possibly be done better
-        loop {
-            if matches!(self.state, FlushState::Idle) {
-                return Poll::Ready(Ok(()))
-            } else if matches!(self.state, FlushState::Pending(_)) {
-                let res = ready!(self.remote_sender.poll_ready_unpin(cx))
-                    .and_then(|_| {
-                        let q = self.state.take_pending();
-                        self.remote_sender.start_send_unpin(q)
-                    });
-                match res {
-                    Ok(_) => {
-                        self.state = FlushState::MustFlush;
-                        continue;
-                    }
-                    Err(_) => {
-                        return Poll::Ready(Err(FlushError::Disconnected))
-                    }
-                }
-            } else if matches!(self.state, FlushState::MustFlush) {
-                let res = ready!(self.remote_sender.poll_flush_unpin(cx));
-                match res {
-                    Ok(_) => {
-                        log::warn!("flushed\t{}", &self.remote_endpoint());
-                        self.state = FlushState::Idle;
-                        return Poll::Ready(Ok(()))
-                    },
-                    Err(_) => {
-                        return Poll::Ready(Err(FlushError::Disconnected))
-                    }
-                }
-            } else {
-                unreachable!();
+        let (result, next_state) = match self.state.take() {
+            FlushState::Idle(s) => {
+                (Poll::Ready(Ok(())), FlushState::Idle(s))
             }
-        }
+            FlushState::Staged => {
+                match self.pending.poll(cx) {
+                    Poll::Ready(Ok(sender)) => 
+                        (Poll::Ready(Ok(())), FlushState::Idle(sender)),
+
+                    Poll::Pending => 
+                        (Poll::Pending, FlushState::Staged),
+
+                    Poll::Ready(Err(e)) => {
+                        log::error!("{e}");
+                        (Poll::Ready(Err(FlushError::Disconnected)), FlushState::Closed)
+                    }
+                }
+            }
+            FlushState::Closed => {
+                unreachable!("Illegal batcher state!");
+            }
+        };
+
+        self.state = next_state;
+        result
     }
 
     /// Put a message in the batch queue, it won't be sent immediately.
@@ -167,7 +201,7 @@ impl<Out: ExchangeData> Batcher<Out> {
 
     pub fn blocking_send_one(&mut self, msg: StreamElement<Out>) -> Result<(), FlushError> {
         log::warn!("USING DEPRECATED BLOCKING CHANNELS TO SEND FOR {}", self.coord);
-        match self.remote_sender.clone_inner().unwrap().blocking_send(NetworkMessage::new_single(msg, self.coord)) {
+        match self.state.clone_sender().clone_inner().unwrap().blocking_send(NetworkMessage::new_single(msg, self.coord)) {
             Ok(_) => Ok(()),
             Err(e) => Err(FlushError::Disconnected),
         }
@@ -175,7 +209,8 @@ impl<Out: ExchangeData> Batcher<Out> {
 
     fn stage_message(&mut self, msg: NetworkMessage<Out>) {
         assert!(self.state.is_idle());
-        self.state = FlushState::Pending(msg);
+        self.pending.set(make_send_future(Some((self.state.take_sender(), msg))));
+        self.state = FlushState::Staged;
     }
 
     pub fn coord(&self) -> Coord {
@@ -183,7 +218,11 @@ impl<Out: ExchangeData> Batcher<Out> {
     }
 
     pub fn remote_endpoint(&self) -> ReceiverEndpoint {
-        self.remote_sender.receiver_endpoint
+        self.remote_endpoint
+    }
+
+    pub(crate) fn is_idle(&self) -> bool {
+        self.state.is_idle()
     }
 }
 

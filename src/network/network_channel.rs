@@ -3,8 +3,9 @@ use std::task::{Context, Poll};
 
 use futures::{Sink, SinkExt};
 use nanorand::Rng;
+use tokio_util::sync::ReusableBoxFuture;
 
-use crate::channel::{channel, Receiver, SelectResult, Sender, PollSender};
+use crate::channel::{channel, Receiver, SelectResult, Sender, PollSender, SendError};
 use crate::network::{NetworkMessage, ReceiverEndpoint};
 use crate::network::multiplexer::MultiplexingSender;
 use crate::operator::ExchangeData;
@@ -49,7 +50,7 @@ pub(crate) struct NetworkSender<Out: ExchangeData> {
 #[derive(Clone)]
 pub(crate) enum NetworkSenderImpl<Out: ExchangeData> {
     /// The channel is local, use an in-memory channel.
-    Local(PollSender<NetworkMessage<Out>>),
+    Local(Sender<NetworkMessage<Out>>),
     /// The channel is remote, use the multiplexer.
     Remote(MultiplexingSender<Out>),
 }
@@ -59,7 +60,7 @@ impl<Out: ExchangeData> NetworkSender<Out> {
     fn local(receiver_endpoint: ReceiverEndpoint, sender: Sender<NetworkMessage<Out>>) -> Self {
         Self {
             receiver_endpoint,
-            sender: NetworkSenderImpl::Local(PollSender::new(sender)),
+            sender: NetworkSenderImpl::Local(sender),
         }
     }
 
@@ -74,44 +75,25 @@ impl<Out: ExchangeData> NetworkSender<Out> {
     /// Get the inner sender if the channel is local.
     pub fn clone_inner(&self) -> Option<Sender<NetworkMessage<Out>>> {
         match &self.sender {
-            NetworkSenderImpl::Local(inner) => Some(inner.get_ref().expect("Trying to clone closed inner channel").clone()),
+            NetworkSenderImpl::Local(inner) => Some(inner.clone()),
             NetworkSenderImpl::Remote(_) => None,
         }
     }
-}
 
-impl<T: ExchangeData> Sink<NetworkMessage<T>> for NetworkSender<T> {
-    type Error = tokio_util::sync::PollSendError<NetworkMessage<T>>;
+    pub async fn send(&mut self, msg: NetworkMessage<Out>) -> Result<(), NetworkSendError<Out>> {
+        match &mut self.sender {
+            NetworkSenderImpl::Local(sender) => {
+                sender.send(msg).await?;
 
-    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match &mut self.get_mut().sender {
-            NetworkSenderImpl::Local(sender) => sender.poll_ready_unpin(cx),
-            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
+                if self.receiver_endpoint.coord.block_id == 2 {
+                    tracing::info!("sent_to block 2");
+                }
+            }
+            NetworkSenderImpl::Remote(_) => todo!(),
         }
-    }
-
-    fn start_send(self: Pin<&mut Self>, item: NetworkMessage<T>) -> Result<(), Self::Error> {
-        match &mut self.get_mut().sender {
-            NetworkSenderImpl::Local(sender) => sender.start_send_unpin(item),
-            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
-        }
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match &mut self.get_mut().sender {
-            NetworkSenderImpl::Local(sender) => sender.poll_flush_unpin(cx),
-            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
-        }
-    }
-
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match &mut self.get_mut().sender {
-            NetworkSenderImpl::Local(sender) => sender.poll_close_unpin(cx),
-            NetworkSenderImpl::Remote(sender) => todo!(), // sender.send(self.receiver_endpoint, message),
-        }
+        Ok(())
     }
 }
-
 
 /// The receiving end of a connection between two replicas.
 ///
@@ -133,23 +115,18 @@ pub(crate) struct NetworkReceiver<In: ExchangeData> {
 }
 
 impl<Out: ExchangeData> NetworkReceiver<Out> {
-    pub fn poll_recv(
-        self: Pin<&'_ mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<NetworkMessage<Out>>> {
-        let this = self.get_mut();
-        let r = this.receiver.poll_recv(cx);
-        match r {
-            Poll::Ready(Some(msg)) => {
+    #[tracing::instrument(name = "net_chan_rx_poll", skip_all, level="trace")]
+    pub async fn recv(&mut self) -> Option<NetworkMessage<Out>> {
+        match self.receiver.recv().await {
+            Some(msg) => {
                 get_profiler().items_in(
                     msg.sender,
-                    this.receiver_endpoint.coord,
+                    self.receiver_endpoint.coord,
                     msg.num_items(),
                 );
-
-                Poll::Ready(Some(msg))
+                Some(msg)
             }
-            o => o,
+            None => None,
         }
     }
 
@@ -182,28 +159,36 @@ impl<Out: ExchangeData> NetworkReceiver<Out> {
     /// The first message of the two is returned. If both receivers are ready one of them is chosen
     /// randomly (with an unspecified probability). It's guaranteed this function has the eventual
     /// fairness property.
-    pub fn poll_select<In2: ExchangeData>(
+    pub async fn poll_select<In2: ExchangeData>(
         self: Pin<&mut Self>,
         other: Pin<&mut NetworkReceiver<In2>>,
         cx: &mut Context<'_>
     ) -> Poll<SelectResult<NetworkMessage<Out>, NetworkMessage<In2>>> {
+
+        todo!();
         // TODO: uniform rand usages
-        if nanorand::tls_rng().generate_range(0..2u8) > 0 {
-            if let Poll::Ready(msg) = self.poll_recv(cx) {
-                return Poll::Ready(SelectResult::A(msg));
-            }
-            if let Poll::Ready(msg) = other.poll_recv(cx) {
-                return Poll::Ready(SelectResult::B(msg));
-            }
-            Poll::Pending
-        } else {
-            if let Poll::Ready(msg) = other.poll_recv(cx) {
-                return Poll::Ready(SelectResult::B(msg));
-            }
-            if let Poll::Ready(msg) = self.poll_recv(cx) {
-                return Poll::Ready(SelectResult::A(msg));
-            }
-            Poll::Pending
-        }
+        // if nanorand::tls_rng().generate_range(0..2u8) > 0 {
+        //     if let Poll::Ready(msg) = self.poll_recv(cx) {
+        //         return Poll::Ready(SelectResult::A(msg));
+        //     }
+        //     if let Poll::Ready(msg) = other.poll_recv(cx) {
+        //         return Poll::Ready(SelectResult::B(msg));
+        //     }
+        //     Poll::Pending
+        // } else {
+        //     if let Poll::Ready(msg) = other.poll_recv(cx) {
+        //         return Poll::Ready(SelectResult::B(msg));
+        //     }
+        //     if let Poll::Ready(msg) = self.poll_recv(cx) {
+        //         return Poll::Ready(SelectResult::A(msg));
+        //     }
+        //     Poll::Pending
+        // }
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum NetworkSendError<T> {
+    #[error("Local send error")]
+    Local(#[from] SendError<NetworkMessage<T>>),
 }

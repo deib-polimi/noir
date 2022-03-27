@@ -81,15 +81,25 @@ where
 {
     type Item = StreamElement<()>;
 
+    #[tracing::instrument(name = "end_poll", skip_all)]
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         loop {
             match this.senders.poll_ready(cx) {
-                Poll::Ready(Ok(_)) => {}
+                Poll::Ready(Ok(_)) => {
+                    this.flush_requested = false;
+                }
                 Poll::Ready(Err(e)) => {
                     panic!("Broken channel {e}"); // TODO: Check
                 }
-                Poll::Pending => return Poll::Pending,
+                Poll::Pending if !this.flush_requested => {
+                    this.senders.flush_all();
+                    this.flush_requested = true;
+                    continue;
+                }
+                Poll::Pending => {
+                    return Poll::Pending;
+                }
             }
 
             if this.terminating {
@@ -107,8 +117,6 @@ where
 
             let message = message.unwrap_or_else(|| StreamElement::Terminate); // TODO: Change
             let to_return = message.take();
-
-            log::warn!("end\t{}: {:?}", coord!(this), &to_return);
 
             match &message {
                 StreamElement::Watermark(_) => 
@@ -205,30 +213,24 @@ struct Senders<Out: ExchangeData> {
     pending_flush: Vec<ReceiverEndpoint>,
 }
 
-macro_rules! enqueue {
-    ($self:ident, $endpoint:expr, $msg:expr) => {
-        if $self.senders.get_mut($endpoint).unwrap().enqueue($msg) {
-            $self.pending_flush.push(*$endpoint);
-        }
-    }
-}
-
 impl<Out: ExchangeData> Senders<Out> {
-    // fn enqueue(&mut self, endpoint: &ReceiverEndpoint, msg: StreamElement<Out>) {
-    //     if self.senders.get_mut(endpoint).unwrap().enqueue(msg) {
-    //         self.pending_flush.push(*endpoint);
-    //     }
-    // }
-
     fn enqueue_all_groups(&mut self, msg: StreamElement<Out>) {
         for endpoint in self.send_groups.iter().flat_map(|g| g.iter()) {
-            enqueue!(self, endpoint, msg.clone());
+            let sender = self.senders.get_mut(endpoint).unwrap();
+            let must_flush = sender.enqueue(msg.clone());
+            if must_flush {
+                self.pending_flush.push(*endpoint);
+            }
         }
     }
 
     fn enqueue_indexed(&mut self, idx: usize, msg: StreamElement<Out>) {
         for endpoint in self.send_groups.iter().map(|group| &group[idx % group.len()]) {
-            enqueue!(self, endpoint, msg.clone());
+            let sender = self.senders.get_mut(endpoint).unwrap();
+            let must_flush = sender.enqueue(msg.clone());
+            if must_flush {
+                self.pending_flush.push(*endpoint);
+            }
         }
     }
 
@@ -236,14 +238,20 @@ impl<Out: ExchangeData> Senders<Out> {
         // MUST FLUSH
         for endpoint in self.send_groups.iter().flat_map(|g| g.iter()) {
             // TODO: Check feedback
-            enqueue!(self, endpoint, StreamElement::Terminate);
+            let sender = self.senders.get_mut(endpoint).unwrap();
+            let _ = sender.enqueue(StreamElement::Terminate);
         }
-        self.flush_all();
+        for sender in self.senders.values_mut() {
+            sender.request_flush();
+            self.pending_flush.push(sender.remote_endpoint());
+        }
     }
 
     fn flush_all(&mut self) {
-        self.senders.values_mut().for_each(|s| s.request_flush());
-        self.pending_flush.extend(self.senders.keys().copied());
+        self.senders.iter_mut().for_each(|(e, s)| {
+            s.request_flush();
+            self.pending_flush.push(*e);
+        });
     }
 
     fn close(&mut self) {
@@ -271,8 +279,13 @@ impl<Out: ExchangeData> Senders<Out> {
             }
         }
         if self.pending_flush.is_empty() {
+            for (endpoint, sender) in &self.senders {
+                assert!(sender.is_idle(), "{} not flushed!", endpoint);
+            }
+
             Poll::Ready(Ok(()))
         } else {
+            log::warn!("cannot_flush {:?}", self.pending_flush);
             Poll::Pending
         }
     }

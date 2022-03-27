@@ -91,6 +91,11 @@ indexmap = "1.8"
 
 coz = "*"
 
+tracing = "*"
+tracing-subscriber = "*"
+console-subscriber = "*"
+
+
 [dev-dependencies]
 # for the tests
 tempfile = "3.3"

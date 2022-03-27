@@ -93,7 +93,7 @@ pub struct NoirJoinHandle {
 impl NoirJoinHandle {
     pub async fn join(mut self) {
         let j = self.join.drain(..)
-            .map(|mut rx| async move {rx.recv().await})
+            .map(|mut rx| async move {rx.recv().await.expect("Failed to join noir block")})
             .collect::<FuturesUnordered<_>>();
 
         j.count().await;
@@ -334,6 +334,8 @@ impl Scheduler {
             .build()
             .unwrap();
 
+        let handle = tokio::runtime::Handle::current(); // TODO: REMOVE
+
         // start the execution
         for (coord, init_fn) in self.async_block_init {
             let block_info = &self.block_info[&coord.block_id];
@@ -347,7 +349,7 @@ impl Scheduler {
                 network: network.clone(),
                 batch_mode: block_info.batch_mode,
             };
-            let (handle, structure) = init_fn(rt.handle(), metadata);
+            let (handle, structure) = init_fn(&handle, metadata);
             join.push(handle.join_handle);
             block_structures.push((coord, structure.clone()));
             job_graph_generator.add_block(coord.block_id, structure);
@@ -413,7 +415,7 @@ impl Scheduler {
                 network: network.clone(),
                 batch_mode: block_info.batch_mode,
             };
-            let (handle, structure) = init_fn(rt.handle(), metadata);
+            let (handle, structure) = init_fn(&rt.handle(), metadata);
             join.push(handle.join_handle);
             block_structures.push((coord, structure.clone()));
             job_graph_generator.add_block(coord.block_id, structure);

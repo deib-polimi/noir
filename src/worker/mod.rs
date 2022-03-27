@@ -3,6 +3,7 @@ use std::pin::Pin;
 
 use futures::{Stream, StreamExt};
 use tokio::runtime::Handle;
+use tracing::Instrument;
 
 use crate::block::{BlockStructure, InnerBlock};
 use crate::channel::{Sender, channel};
@@ -184,11 +185,14 @@ where
         block.to_string(),
     );
 
+    let coord = metadata.coord;
+
     let thunk = BlockThunkInner::new(block, metadata, tx_end);
 
-    rt.spawn(run_async(thunk));
-
-    // s.spawn_fifo(move |s| run(s, thunk));
+    tokio::task::Builder::new()
+        .name(&format!("{coord}"))
+        .spawn(run_async(thunk));
+    // rt.spawn(run_async(thunk));
 
     (CompletionHandle::new(rx_end), structure)
 }
@@ -231,7 +235,7 @@ async fn run_async<Out: Data, OperatorChain>(
 
     let coord = thunk.metadata().coord;
     let tx_end = thunk.tx_end();
-    let cnt = thunk.fuse().count().await;
+    let cnt = thunk.fuse().count().instrument(tracing::trace_span!("worker_stream")).await;
     log::info!("Stopping {} after {} events", coord, cnt);
     tx_end.send(()).await.unwrap();
 }

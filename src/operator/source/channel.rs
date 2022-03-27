@@ -91,7 +91,6 @@ impl<Out: Data + core::fmt::Debug> futures::Stream for ChannelSource<Out> {
 
         match result {
             Some(t) => {
-                log::warn!("FWD");
                 Poll::Ready(Some(StreamElement::Item(t)))
             }
             None => {

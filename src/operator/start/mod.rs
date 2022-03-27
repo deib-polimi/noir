@@ -35,7 +35,7 @@ pub(crate) trait StartBlockReceiver<Out>: Clone + Unpin {
     /// `StreamElement::Terminate` message.
     fn cached_replicas(&self) -> usize;
 
-    fn poll_recv(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<NetworkMessage<Out>>>;
+    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<NetworkMessage<Out>>>;
 
     fn blocking_recv_one(&mut self) -> Option<NetworkMessage<Out>>;
 
@@ -153,10 +153,9 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Strea
 {
     type Item = StreamElement<Out>;
 
+    #[tracing::instrument(name = "start_mod_poll", skip_all)]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let metadata = self.metadata.as_ref().unwrap().clone();
-
-        log::warn!("start_polled\t{}\t{}", coord!(self), std::thread::current().name().unwrap());
 
         loop {
             // all the previous blocks sent an end: we're done
@@ -216,9 +215,6 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Strea
                     }
                 };
 
-                let msg_q = msg.take();
-                log::warn!("start\t{}: {:?}", coord!(self), msg_q);
-
                 // the previous iteration has ended, this message refers to the new iteration: we need to be
                 // sure the state is set before we let this message pass
                 if self.wait_for_state {
@@ -232,12 +228,17 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Strea
 
             }
 
-            match ready!(Pin::new(&mut self.receiver).poll_recv(cx)) {
-                Some(net_msg) => {
+            match Pin::new(&mut self.receiver).poll_recv(cx) {
+                Poll::Ready(Some(net_msg)) => {
+                    tracing::trace!("rx_ready");
                     self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
                     continue;
                 }
-                None => todo!("Handle disconnect start channel"),
+                Poll::Ready(None) => todo!("Handle disconnect start channel"),
+                Poll::Pending => {
+                    // tracing::trace!("rx_pending");
+                    return Poll::Pending;
+                }
             }
         }
     }

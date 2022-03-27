@@ -19,7 +19,7 @@ use crate::stream::BlockId;
 
 use super::NetworkMessage;
 
-const CHANNEL_CAPACITY: usize = 64;
+const CHANNEL_CAPACITY: usize = 4;
 
 /// This struct is used to index inside the `typemap` with the `NetworkReceiver`s.
 struct ReceiverKey<In: ExchangeData>(PhantomData<In>);

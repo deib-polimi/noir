@@ -1,7 +1,9 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use futures::ready;
+use futures::{ready, StreamExt};
+use futures::SinkExt;
+use tracing::instrument;
 
 use crate::block::{BlockStructure, OperatorKind, OperatorStructure};
 use crate::operator::sink::Sink;
@@ -11,17 +13,14 @@ use crate::stream::{KeyValue, KeyedStream, Stream};
 
 use crate::channel::{Receiver, PollSender, channel};
 
-#[pin_project::pin_project]
 #[derive(Debug)]
 pub struct CollectChannelSink<Out: ExchangeData, PreviousOperators>
 where
     PreviousOperators: Operator<Out>,
 {
-    #[pin]
     prev: PreviousOperators,
     metadata: Option<ExecutionMetadata>,
     pending_item: Option<Out>,
-    #[pin]
     tx: PollSender<Out>,
     terminated: bool,
 }
@@ -73,37 +72,41 @@ where
 {
     type Item = StreamElement<()>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut proj = self.project();
-        if *proj.terminated {
-            return Poll::Ready(None);
-        }
+    #[instrument(name = "collect_channel_poll", skip_all)]
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {        
+        let mut proj = self.get_mut();
         loop {
-            if let Some(item) = proj.pending_item.take() {
-                match proj.tx.as_mut().poll_reserve(cx) {
+            if proj.terminated {
+                return Poll::Ready(None);
+            }
+
+            if proj.pending_item.is_some() {
+                tracing::trace!("poll_tx_pending");
+                match proj.tx.poll_reserve(cx) {
                     Poll::Ready(Ok(_)) => {
-                        proj.tx.send_item(item).ok().unwrap(); // TODO: check
+                        proj.tx.send_item(proj.pending_item.take().unwrap()).ok().unwrap(); // TODO: check
+                        tracing::trace!("sent");
                         return Poll::Ready(Some(StreamElement::Item(())))
                     }
                     Poll::Ready(Err(_)) => {
                         panic!("Channel disconnected");
                     }
                     Poll::Pending => {
-                        *proj.pending_item = Some(item);
                         return Poll::Pending;
                     }
                 }
             }
 
             assert!(proj.pending_item.is_none());
-            let r = match ready!(proj.prev.as_mut().poll_next(cx)).unwrap_or_else(|| StreamElement::Terminate) {
+            tracing::trace!("poll_prev");
+            let r = match ready!(proj.prev.poll_next_unpin(cx)).unwrap_or_else(|| StreamElement::Terminate) {
                 StreamElement::Item(t) | StreamElement::Timestamped(t, _) => {
-                    *proj.pending_item = Some(t);
+                    proj.pending_item = Some(t);
                     continue;
                 }
                 StreamElement::Watermark(w) => StreamElement::Watermark(w),
                 StreamElement::Terminate => {
-                    *proj.terminated = true;
+                    proj.terminated = true;
                     return Poll::Ready(None);
                 }
                 StreamElement::FlushBatch => StreamElement::FlushBatch,
