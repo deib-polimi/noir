@@ -153,7 +153,7 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Strea
 {
     type Item = StreamElement<Out>;
 
-    #[tracing::instrument(name = "start_mod_poll", skip_all)]
+    #[tracing::instrument(name = "start_mod", skip_all)]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let metadata = self.metadata.as_ref().unwrap().clone();
 
@@ -201,7 +201,7 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Strea
                             }
                             StreamElement::Terminate => {
                                 self.missing_terminate -= 1;
-                                warn!(
+                                tracing::trace!(
                                     "Start {} received a Terminate, {} more to come",
                                     metadata.coord, self.missing_terminate
                                 );
@@ -225,18 +225,15 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Strea
                     self.wait_for_state = false;
                 }
                 return Poll::Ready(Some(msg));
-
             }
 
             match Pin::new(&mut self.receiver).poll_recv(cx) {
                 Poll::Ready(Some(net_msg)) => {
-                    tracing::trace!("rx_ready");
                     self.batch_iter = Some((net_msg.sender(), net_msg.into_iter()));
                     continue;
                 }
                 Poll::Ready(None) => todo!("Handle disconnect start channel"),
                 Poll::Pending => {
-                    // tracing::trace!("rx_pending");
                     return Poll::Pending;
                 }
             }

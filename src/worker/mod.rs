@@ -189,10 +189,10 @@ where
 
     let thunk = BlockThunkInner::new(block, metadata, tx_end);
 
-    tokio::task::Builder::new()
-        .name(&format!("{coord}"))
-        .spawn(run_async(thunk));
-    // rt.spawn(run_async(thunk));
+    // tokio::task::Builder::new()
+    //     .name(&format!("{coord}"))
+    //     .spawn(run_async(thunk));
+    rt.spawn(run_async(thunk));
 
     (CompletionHandle::new(rx_end), structure)
 }
@@ -235,7 +235,13 @@ async fn run_async<Out: Data, OperatorChain>(
 
     let coord = thunk.metadata().coord;
     let tx_end = thunk.tx_end();
-    let cnt = thunk.fuse().count().instrument(tracing::trace_span!("worker_stream")).await;
-    log::info!("Stopping {} after {} events", coord, cnt);
+    let mut pin = Box::pin(thunk);
+    while let Some(q) = StreamExt::next(&mut pin).await {
+        if coord.block_id == 2 {
+            tracing::trace!("b2 {:?}", q.take());
+        }
+    }
+    // let cnt = thunk.fuse().count().instrument(tracing::trace_span!("worker_stream")).await;
+    // log::info!("Stopping {} after {} events", coord, cnt);
     tx_end.send(()).await.unwrap();
 }

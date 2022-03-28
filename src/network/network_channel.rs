@@ -84,10 +84,6 @@ impl<Out: ExchangeData> NetworkSender<Out> {
         match &mut self.sender {
             NetworkSenderImpl::Local(sender) => {
                 sender.send(msg).await?;
-
-                if self.receiver_endpoint.coord.block_id == 2 {
-                    tracing::info!("sent_to block 2");
-                }
             }
             NetworkSenderImpl::Remote(_) => todo!(),
         }
@@ -119,14 +115,18 @@ impl<Out: ExchangeData> NetworkReceiver<Out> {
     pub async fn recv(&mut self) -> Option<NetworkMessage<Out>> {
         match self.receiver.recv().await {
             Some(msg) => {
-                get_profiler().items_in(
-                    msg.sender,
-                    self.receiver_endpoint.coord,
-                    msg.num_items(),
-                );
+                // get_profiler().items_in(
+                //     msg.sender,
+                //     self.receiver_endpoint.coord,
+                //     msg.num_items(),
+                // );
                 Some(msg)
             }
-            None => None,
+            None => 
+            {
+                tracing::error!("netchan {} received None!", self.receiver_endpoint);
+                None
+            }
         }
     }
 

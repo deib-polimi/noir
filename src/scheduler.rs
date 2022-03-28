@@ -329,12 +329,12 @@ impl Scheduler {
                 let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
                 format!("noir-op-{:02}", id)
             })
-            .on_thread_start(|| coz::thread_init())
+            // .on_thread_start(|| coz::thread_init())
             .enable_time()
             .build()
             .unwrap();
 
-        let handle = tokio::runtime::Handle::current(); // TODO: REMOVE
+        let handle = rt.handle(); // tokio::runtime::Handle::current(); // TODO: REMOVE
 
         // start the execution
         for (coord, init_fn) in self.async_block_init {

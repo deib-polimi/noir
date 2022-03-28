@@ -34,6 +34,7 @@ where
     ignore_block_ids: Vec<BlockId>,
     flush_requested: bool,
     terminating: bool,
+    yielding: bool,
 }
 
 impl<Out: ExchangeData, OperatorChain, IndexFn> EndBlock<Out, OperatorChain, IndexFn>
@@ -56,6 +57,7 @@ where
             ignore_block_ids: Default::default(),
             flush_requested: false,
             terminating: false,
+            yielding: false,
         }
     }
 
@@ -85,33 +87,44 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         loop {
+            // First check for pending flushes
             match this.senders.poll_ready(cx) {
-                Poll::Ready(Ok(_)) => {
-                    this.flush_requested = false;
-                }
+                Poll::Ready(Ok(_)) => {}
                 Poll::Ready(Err(e)) => {
                     panic!("Broken channel {e}"); // TODO: Check
-                }
-                Poll::Pending if !this.flush_requested => {
-                    this.senders.flush_all();
-                    this.flush_requested = true;
-                    continue;
                 }
                 Poll::Pending => {
                     return Poll::Pending;
                 }
             }
+            // Proceed if all ready, yield otherwise
 
             if this.terminating {
                 this.senders.close();
                 return Poll::Ready(None);
             }
 
+            // Outbound channels are ready
+            // Ask for the next value to the previous operators
             let message = match this.prev.poll_next_unpin(cx) {
-                Poll::Ready(m) => m,
+                Poll::Ready(m) => m, // The value is ready, go ahead
                 Poll::Pending => {
+                    // The operator chain has not produced a value yet. THIS BLOCK MUST NOW YIELD.
+                    // Mark any queued item for flushing, this way they are not left hanging
                     this.senders.flush_all();
-                    continue;
+
+                    // Try to flush the pending items
+                    // This will register all necessary wakers to ensure that the task wakes up
+                    // as soon as either one of the outbound channels is now ready
+                    // OR when an inbound value is ready (ensured by the this.prev.poll_next_unpin(cx) call)
+                    match this.senders.poll_ready(cx) {
+                        Poll::Ready(Err(e)) => {
+                            panic!("Broken channel {e}"); // TODO: Check
+                        }
+                        Poll::Ready(Ok(_)) | Poll::Pending => {
+                            return Poll::Pending;
+                        }
+                    }
                 }
             };
 
@@ -126,7 +139,7 @@ where
                     this.senders.flush_all();
                 }
                 StreamElement::Terminate => {
-                    log::warn!("Broadcasting Terminate {}", this.metadata.as_ref().unwrap().coord);
+                    tracing::trace!("Broadcasting Terminate {}", this.metadata.as_ref().unwrap().coord);
                     this.senders.broadcast_terminate();
                     this.terminating = true;
                 }
@@ -242,15 +255,16 @@ impl<Out: ExchangeData> Senders<Out> {
             let _ = sender.enqueue(StreamElement::Terminate);
         }
         for sender in self.senders.values_mut() {
-            sender.request_flush();
+            sender.stage_batch();
             self.pending_flush.push(sender.remote_endpoint());
         }
     }
 
     fn flush_all(&mut self) {
         self.senders.iter_mut().for_each(|(e, s)| {
-            s.request_flush();
-            self.pending_flush.push(*e);
+            if s.stage_batch() {
+                self.pending_flush.push(*e);
+            }
         });
     }
 
@@ -270,7 +284,7 @@ impl<Out: ExchangeData> Senders<Out> {
                     self.pending_flush.swap_remove(i);
                 }
                 Poll::Ready(Err(e)) => {
-                    log::error!("Couldn't flush channel, destination: {}", coord);
+                    tracing::error!("Couldn't flush channel, destination: {}", coord);
                     return Poll::Ready(Err(e))
                 }
                 Poll::Pending => {
@@ -285,7 +299,7 @@ impl<Out: ExchangeData> Senders<Out> {
 
             Poll::Ready(Ok(()))
         } else {
-            log::warn!("cannot_flush {:?}", self.pending_flush);
+            log::debug!("not_flushed: {:?}", self.pending_flush);
             Poll::Pending
         }
     }

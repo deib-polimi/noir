@@ -8,6 +8,7 @@ use std::task::Poll;
 use futures::ready;
 use tokio::sync::mpsc::*;
 use tokio::sync::mpsc::error::*;
+use tracing::instrument;
 
 use crate::block::{BlockStructure, OperatorKind, OperatorStructure};
 use crate::operator::source::Source;
@@ -76,10 +77,11 @@ impl<Out: Data + core::fmt::Debug> Source<Out> for ChannelSource<Out> {
 impl<Out: Data + core::fmt::Debug> futures::Stream for ChannelSource<Out> {
     type Item = StreamElement<Out>;
 
+    #[tracing::instrument(name = "channel_source", skip_all)]
     fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
         match self.state {
             State::Terminated => {
-                log::warn!("Channel source sending terminate");
+                tracing::trace!("sending terminate");
                 self.state = State::Stopped;
                 return Poll::Ready(Some(StreamElement::Terminate));
             }
@@ -87,16 +89,17 @@ impl<Out: Data + core::fmt::Debug> futures::Stream for ChannelSource<Out> {
             State::Running => {}
         }
 
-        let result = ready!(self.rx.poll_recv(cx)); // TODO: flush
-
-        match result {
-            Some(t) => {
+        match self.rx.poll_recv(cx) {
+            Poll::Ready(Some(t)) => {
                 Poll::Ready(Some(StreamElement::Item(t)))
             }
-            None => {
+            Poll::Ready(None) => {
                 self.state = State::Terminated;
                 log::info!("Stream disconnected");
                 Poll::Ready(Some(StreamElement::FlushAndRestart))
+            }
+            Poll::Pending => {
+                Poll::Pending
             }
         }
     }

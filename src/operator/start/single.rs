@@ -105,12 +105,11 @@ impl<Out: ExchangeData> StartBlockReceiver<Out> for SingleStartBlockReceiver<Out
 
     #[tracing::instrument(name = "start_single_poll_recv", skip_all)]
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<NetworkMessage<Out>>> {
-        let (result, next_state) = match self.state.take() {
-            RecvState::Idle(receiver) => {
-                self.pending.set(make_recv_future(Some(receiver)));
-
+        macro_rules! try_recv {
+            () => {
                 match self.pending.poll(cx) {
                     Poll::Ready(Some((item, receiver))) => {
+                        cx.waker().wake_by_ref();
                         (Poll::Ready(Some(item)), RecvState::Idle(receiver))
                     }
                     Poll::Ready(None) => {
@@ -119,16 +118,15 @@ impl<Out: ExchangeData> StartBlockReceiver<Out> for SingleStartBlockReceiver<Out
                     Poll::Pending => (Poll::Pending, RecvState::Pending),
                 }
             }
+        }
+
+        let (result, next_state) = match self.state.take() {
+            RecvState::Idle(receiver) => {
+                self.pending.set(make_recv_future(Some(receiver)));
+                try_recv!()
+            }
             RecvState::Pending => {
-                match self.pending.poll(cx) {
-                    Poll::Ready(Some((item, receiver))) => {
-                        (Poll::Ready(Some(item)), RecvState::Idle(receiver))
-                    }
-                    Poll::Ready(None) => {
-                        (Poll::Ready(None), RecvState::Closed)
-                    }
-                    Poll::Pending => (Poll::Pending, RecvState::Pending),
-                }
+                try_recv!()
             }
             RecvState::Closed => panic!("Trying to receive from illegal Closed state"),
         };

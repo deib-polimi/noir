@@ -49,7 +49,7 @@ impl<T: ExchangeData> FlushState<T> {
     }
 
     pub fn take_sender(&mut self) -> NetworkSender<T> {
-        let prev = std::mem::replace(self, FlushState::MustFlush);
+        let prev = std::mem::replace(self, FlushState::Closed);
         match prev {
             FlushState::Idle(t) => t,
             _ => panic!("Trying to take sender from invalid FlushState")
@@ -131,14 +131,16 @@ impl<Out: ExchangeData> Batcher<Out> {
             }
             FlushState::Staged => {
                 match self.pending.poll(cx) {
-                    Poll::Ready(Ok(sender)) => 
-                        (Poll::Ready(Ok(())), FlushState::Idle(sender)),
-
+                    Poll::Ready(Ok(sender)) => {
+                        self.pending.set(make_send_future(None)); // TODO REMOVE: To assert that it is never polled more than necessary
+                        (Poll::Ready(Ok(())), FlushState::Idle(sender))
+                    }
                     Poll::Pending => 
                         (Poll::Pending, FlushState::Staged),
 
                     Poll::Ready(Err(e)) => {
                         log::error!("{e}");
+                        panic!(); // TODO: REMOVE
                         (Poll::Ready(Err(FlushError::Disconnected)), FlushState::Closed)
                     }
                 }
@@ -161,8 +163,7 @@ impl<Out: ExchangeData> Batcher<Out> {
                 self.buffer.push(msg);
                 let timeout_elapsed = self.last_send.elapsed() > max_delay.into();
                 if self.buffer.len() >= n.get() || timeout_elapsed {
-                    self.stage_batch();
-                    true
+                    self.stage_batch()
                 } else {
                     false
                 }
@@ -170,8 +171,7 @@ impl<Out: ExchangeData> Batcher<Out> {
             BatchMode::Fixed(n) => {
                 self.buffer.push(msg);
                 if self.buffer.len() >= n.get() {
-                    self.stage_batch();
-                    true
+                    self.stage_batch()
                 } else {
                     false
                 }
@@ -184,18 +184,17 @@ impl<Out: ExchangeData> Batcher<Out> {
         }
     }
 
-    pub fn request_flush(&mut self) {
-        self.stage_batch()
-    }
-
-    fn stage_batch(&mut self) {
+    pub fn stage_batch(&mut self) -> bool {
         if !self.buffer.is_empty() {
             let cap = self.buffer.capacity();
             let new_cap = if self.buffer.len() < cap / 2 { cap / 2 } else { cap };
             let mut batch = Vec::with_capacity(new_cap);
             std::mem::swap(&mut self.buffer, &mut batch);
             let message = NetworkMessage::new_batch(batch, self.coord);
-            self.stage_message(message)
+            self.stage_message(message);
+            true
+        } else {
+            false
         }
     }
 
