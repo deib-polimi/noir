@@ -158,7 +158,7 @@ where
                         (Poll::Ready(None), SendState::Closed)
                     }
                     Poll::Pending => {
-                        tracing::error!("channel sink full!");
+                        tracing::debug!("channel sink full!");
                         (Poll::Pending, SendState::Staged)
                     }
                 }
