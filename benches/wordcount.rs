@@ -5,6 +5,7 @@ use std::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use fake::Fake;
 use itertools::Itertools;
+use noir::operator::source::FileSourceAsync;
 use rand::prelude::StdRng;
 use rand::SeedableRng;
 
@@ -17,92 +18,92 @@ fn wordcount_fold(path: &Path) {
     let config = EnvironmentConfig::local(4);
     let mut env = StreamEnvironment::new(config);
 
-    let source = FileSource::new(path);
+    let source = FileSourceAsync::new(path);
     let _result = env
         .stream(source)
         .batch_mode(BatchMode::fixed(1024))
-        .flat_map(move |line| line.split(' ').map(|s| s.to_owned()).collect_vec())
-        .group_by(|word| word.clone())
-        .fold(0, |count, _word| *count += 1)
-        .collect_vec();
+        .flat_map_async(move |line| line.split(' ').map(|s| s.to_owned()).collect_vec())
+        .group_by_async(|word: &String| word.clone())
+        .fold_async(0, |count, _word| *count += 1)
+        .collect_vec_async();
     env.execute();
 }
 
-fn wordcount_fold_assoc(path: &Path) {
-    let config = EnvironmentConfig::local(4);
-    let mut env = StreamEnvironment::new(config);
+// fn wordcount_fold_assoc(path: &Path) {
+//     let config = EnvironmentConfig::local(4);
+//     let mut env = StreamEnvironment::new(config);
 
-    let source = FileSource::new(path);
-    let stream = env
-        .stream(source)
-        .batch_mode(BatchMode::fixed(1024))
-        .flat_map(move |line| line.split(' ').map(|s| s.to_owned()).collect_vec())
-        .group_by_fold(
-            |w| w.clone(),
-            0,
-            |count, _word| *count += 1,
-            |count1, count2| *count1 += count2,
-        )
-        .unkey();
-    let _result = stream.collect_vec();
-    env.execute();
-}
+//     let source = FileSource::new(path);
+//     let stream = env
+//         .stream(source)
+//         .batch_mode(BatchMode::fixed(1024))
+//         .flat_map_async(move |line| line.split(' ').map(|s| s.to_owned()).collect_vec())
+//         .group_by_fold(
+//             |w| w.clone(),
+//             0,
+//             |count, _word| *count += 1,
+//             |count1, count2| *count1 += count2,
+//         )
+//         .unkey();
+//     let _result = stream.collect_vec();
+//     env.execute();
+// }
 
-fn wordcount_fold_assoc_kstring(path: &Path) {
-    let config = EnvironmentConfig::local(4);
-    let mut env = StreamEnvironment::new(config);
+// fn wordcount_fold_assoc_kstring(path: &Path) {
+//     let config = EnvironmentConfig::local(4);
+//     let mut env = StreamEnvironment::new(config);
 
-    let source = FileSource::new(path);
-    let stream = env
-        .stream(source)
-        .batch_mode(BatchMode::fixed(1024))
-        .flat_map(move |line| {
-            line.split(' ')
-                .map(kstring::KString::from_ref)
-                .collect_vec()
-        })
-        .group_by_fold(
-            |w| w.clone(),
-            0,
-            |count, _word| *count += 1,
-            |count1, count2| *count1 += count2,
-        )
-        .unkey();
-    let _result = stream.collect_vec();
-    env.execute();
-}
+//     let source = FileSource::new(path);
+//     let stream = env
+//         .stream(source)
+//         .batch_mode(BatchMode::fixed(1024))
+//         .flat_map_async(move |line| {
+//             line.split(' ')
+//                 .map(kstring::KString::from_ref)
+//                 .collect_vec()
+//         })
+//         .group_by_fold(
+//             |w| w.clone(),
+//             0,
+//             |count, _word| *count += 1,
+//             |count1, count2| *count1 += count2,
+//         )
+//         .unkey();
+//     let _result = stream.collect_vec();
+//     env.execute();
+// }
 
-fn wordcount_reduce(path: &Path) {
-    let config = EnvironmentConfig::local(4);
-    let mut env = StreamEnvironment::new(config);
+// fn wordcount_reduce(path: &Path) {
+//     let config = EnvironmentConfig::local(4);
+//     let mut env = StreamEnvironment::new(config);
 
-    let source = FileSource::new(path);
-    let _result = env
-        .stream(source)
-        .batch_mode(BatchMode::fixed(1024))
-        .flat_map(move |line| line.split(' ').map(|s| s.to_owned()).collect_vec())
-        .group_by(|word| word.clone())
-        .map(|(_, word)| (word, 1))
-        .reduce(|(_w1, c1), (_w2, c2)| *c1 += c2)
-        .collect_vec();
-    env.execute();
-}
+//     let source = FileSource::new(path);
+//     let _result = env
+//         .stream(source)
+//         .batch_mode(BatchMode::fixed(1024))
+//         .flat_map_async(move |line| line.split(' ').map(|s| s.to_owned()).collect_vec())
+//         .group_by_async(|word| word.clone())
+//         .map(|(_, word)| (word, 1))
+//         .reduce(|(_w1, c1), (_w2, c2)| *c1 += c2)
+//         .collect_vec();
+//     env.execute();
+// }
 
-fn wordcount_reduce_assoc(path: &Path) {
-    let config = EnvironmentConfig::local(4);
-    let mut env = StreamEnvironment::new(config);
+// fn wordcount_reduce_assoc(path: &Path) {
+//     let config = EnvironmentConfig::local(4);
+//     let mut env = StreamEnvironment::new(config);
 
-    let source = FileSource::new(path);
-    let stream = env
-        .stream(source)
-        .batch_mode(BatchMode::fixed(1024))
-        .flat_map(move |line| line.split(' ').map(|s| s.to_owned()).collect_vec())
-        .map(|word| (word, 1))
-        .group_by_reduce(|w| w.clone(), |(_w1, c1), (_w, c2)| *c1 += c2)
-        .unkey();
-    let _result = stream.collect_vec();
-    env.execute();
-}
+//     let source = FileSource::new(path);
+//     let stream = env
+//         .stream(source)
+//         .batch_mode(BatchMode::fixed(1024))
+//         .flat_map_async(move |line| line.split(' ').map(|s| s.to_owned()).collect_vec())
+//         .map(|word| (word, 1))
+//         .group_by_reduce(|w| w.clone(), |(_w1, c1), (_w, c2)| *c1 += c2)
+//         .unkey();
+//     let _result = stream.collect_vec();
+//     env.execute();
+// }
 
 fn wordcount_benchmark(c: &mut Criterion) {
     let mut file = tempfile::NamedTempFile::new().unwrap();

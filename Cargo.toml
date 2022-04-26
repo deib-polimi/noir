@@ -70,8 +70,10 @@ chrono = "0.4"
 # Faster monotonic clock using libc's CLOCK_MONOTONIC_COARSE
 coarsetime = "0.1"
 
-tokio = { version = "1", features = ["sync", "rt-multi-thread"] }
+tokio = { version = "1", features = ["full"] } # TODO: Select minimum needed features
+tokio-stream = { version = "0.1", features = [ "io-util" ] }
 tokio-util = "0.7"
+
 futures = "0.3"
 
 parking_lot = "0.12"
@@ -99,7 +101,7 @@ console-subscriber = "*"
 [dev-dependencies]
 # for the tests
 tempfile = "3.3"
-criterion = { version = "0.3", features = ["html_reports"] }
+criterion = { version = "0.3", features = ["html_reports", "async_tokio"] }
 fake = "2.4"
 
 # for the examples
@@ -116,6 +118,9 @@ kstring = "1.0"
 # require the harness.
 [[bench]]
 name = "wordcount"
+harness = false
+[[bench]]
+name = "wordcount_by_line"
 harness = false
 [[bench]]
 name = "shuffle"

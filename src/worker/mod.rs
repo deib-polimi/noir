@@ -223,24 +223,28 @@ fn run<Out: Data, OperatorChain>(
     // catch_panic.defuse();
 }
 
+#[tracing::instrument(name = "run_async", skip_all)]
 async fn run_async<Out: Data, OperatorChain>(
     thunk: BlockThunkInner<Out, OperatorChain>
 ) where
     OperatorChain: Operator<Out> + Stream<Item=StreamElement<Out>> + 'static,
 {
-    log::trace!("Async worker started {}", thunk.metadata().coord);
+    let coord = thunk.metadata().coord;
+    tracing::trace!("started {}", coord);
     // let mut catch_panic = CatchPanic::new(move || {
-    //     error!("Worker {} has crashed!", thunk.metadata().coord);
+    //     error!("Worker {} has crashed!", coord);
     // });
 
-    let coord = thunk.metadata().coord;
     let tx_end = thunk.tx_end();
     let mut pin = Box::pin(thunk);
     while let Some(q) = StreamExt::next(&mut pin).await {
-        if coord.block_id == 2 {
-            tracing::trace!("b2 {:?}", q.take());
+        if let StreamElement::Terminate = q {
+            tracing::trace!("terminate {}", coord);
+            break;
         }
     }
+    tracing::trace!("stopped {}", coord);
+
     // let cnt = thunk.fuse().count().instrument(tracing::trace_span!("worker_stream")).await;
     // log::info!("Stopping {} after {} events", coord, cnt);
     tx_end.send(()).await.unwrap();

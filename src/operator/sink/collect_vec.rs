@@ -1,6 +1,11 @@
+use std::pin::Pin;
+use std::task::{Poll, Context};
+
+use futures::{StreamExt, ready};
+
 use crate::block::{BlockStructure, OperatorKind, OperatorStructure};
 use crate::operator::sink::{Sink, StreamOutput, StreamOutputRef};
-use crate::operator::{ExchangeData, ExchangeDataKey, Operator, StreamElement};
+use crate::operator::{ExchangeData, ExchangeDataKey, Operator, StreamElement, AsyncOperator};
 use crate::scheduler::ExecutionMetadata;
 use crate::stream::{KeyValue, KeyedStream, Stream};
 
@@ -52,6 +57,38 @@ where
         let mut operator = OperatorStructure::new::<Out, _>("CollectVecSink");
         operator.kind = OperatorKind::Sink;
         self.prev.structure().add_operator(operator)
+    }
+}
+
+impl<Out: ExchangeData, PreviousOperators> futures::Stream for CollectVecSink<Out, PreviousOperators>
+where
+    PreviousOperators: AsyncOperator<Out> + Unpin,
+{
+    type Item = StreamElement<()>;
+
+    #[tracing::instrument(name = "collect_vec", skip_all)]
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match ready!(self.prev.poll_next_unpin(cx)).unwrap_or(StreamElement::Terminate) {
+            StreamElement::Item(t) | StreamElement::Timestamped(t, _) => {
+                // cloned CollectVecSink or already ended stream
+                if let Some(result) = self.result.as_mut() {
+                    tracing::trace!("push");
+                    result.push(t);
+                }
+                Poll::Ready(Some(StreamElement::Item(())))
+            }
+            StreamElement::Watermark(w) => Poll::Ready(Some(StreamElement::Watermark(w))),
+            StreamElement::Terminate => {
+                tracing::trace!("complete");
+                if let Some(result) = self.result.take() {
+                    *self.output.lock().unwrap() = Some(result);
+                }
+                Poll::Ready(Some(StreamElement::Terminate))
+            }
+            StreamElement::FlushBatch => Poll::Ready(Some(StreamElement::FlushBatch)),
+            StreamElement::FlushAndRestart => Poll::Ready(Some(StreamElement::FlushAndRestart)),
+            StreamElement::Yield => panic!("ASDASD"), //TODO: Check
+        }
     }
 }
 
@@ -108,6 +145,45 @@ where
     }
 }
 
+impl<Out: ExchangeData, OperatorChain> Stream<Out, OperatorChain>
+where
+    OperatorChain: AsyncOperator<Out> + Unpin + 'static,
+{
+    /// Close the stream and store all the resulting items into a [`Vec`] on a single host.
+    ///
+    /// If the stream is distributed among multiple replicas, a bottleneck is placed where all the
+    /// replicas sends the items to.
+    ///
+    /// **Note**: the order of items and keys is unspecified.
+    ///
+    /// **Note**: this operator will split the current block.
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// # use noir::{StreamEnvironment, EnvironmentConfig};
+    /// # use noir::operator::source::IteratorSource;
+    /// # let mut env = StreamEnvironment::new(EnvironmentConfig::local(1));
+    /// let s = env.stream(IteratorSource::new((0..10)));
+    /// let res = s.collect_vec();
+    ///
+    /// env.execute();
+    ///
+    /// assert_eq!(res.get().unwrap(), (0..10).collect::<Vec<_>>());
+    /// ```
+    pub fn collect_vec_async(self) -> StreamOutput<Vec<Out>> {
+        let output = StreamOutputRef::default();
+        self.max_parallelism_async(1)
+            .add_async_operator(|prev| CollectVecSink {
+                prev,
+                result: Some(Vec::new()),
+                output: output.clone(),
+            })
+            .finalize_block_async();
+        StreamOutput { result: output }
+    }
+}
+
 impl<Key: ExchangeDataKey, Out: ExchangeData, OperatorChain> KeyedStream<Key, Out, OperatorChain>
 where
     OperatorChain: Operator<KeyValue<Key, Out>> + 'static,
@@ -140,6 +216,41 @@ where
     /// ```
     pub fn collect_vec(self) -> StreamOutput<Vec<(Key, Out)>> {
         self.unkey().collect_vec()
+    }
+}
+
+impl<Key: ExchangeDataKey, Out: ExchangeData, OperatorChain> KeyedStream<Key, Out, OperatorChain>
+where
+    OperatorChain: AsyncOperator<KeyValue<Key, Out>> + Unpin + 'static,
+{
+    /// Close the stream and store all the resulting items into a [`Vec`] on a single host.
+    ///
+    /// If the stream is distributed among multiple replicas, a bottleneck is placed where all the
+    /// replicas sends the items to.
+    ///
+    /// **Note**: the collected items are the pairs `(key, value)`.
+    ///
+    /// **Note**: the order of items and keys is unspecified.
+    ///
+    /// **Note**: this operator will split the current block.
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// # use noir::{StreamEnvironment, EnvironmentConfig};
+    /// # use noir::operator::source::IteratorSource;
+    /// # let mut env = StreamEnvironment::new(EnvironmentConfig::local(1));
+    /// let s = env.stream(IteratorSource::new((0..3))).group_by(|&n| n % 2);
+    /// let res = s.collect_vec();
+    ///
+    /// env.execute();
+    ///
+    /// let mut res = res.get().unwrap();
+    /// res.sort_unstable(); // the output order is nondeterministic
+    /// assert_eq!(res, vec![(0, 0), (0, 2), (1, 1)]);
+    /// ```
+    pub fn collect_vec_async(self) -> StreamOutput<Vec<(Key, Out)>> {
+        self.unkey_async().collect_vec_async()
     }
 }
 

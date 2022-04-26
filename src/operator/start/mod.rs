@@ -160,12 +160,12 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Strea
         loop {
             // all the previous blocks sent an end: we're done
             if self.missing_terminate == 0 {
-                info!("StartBlock for {} has ended", metadata.coord);
+                tracing::trace!("emitting terminate {}", metadata.coord);
                 return Poll::Ready(Some(StreamElement::Terminate));
             }
             if self.missing_flush_and_restart == 0 {
-                debug!(
-                    "StartBlock for {} is emitting flush and restart",
+                tracing::trace!(
+                    "emitting flush and restart {}",
                     metadata.coord,
                 );
 
@@ -202,8 +202,8 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Strea
                             StreamElement::Terminate => {
                                 self.missing_terminate -= 1;
                                 tracing::trace!(
-                                    "Start {} received a Terminate, {} more to come",
-                                    metadata.coord, self.missing_terminate
+                                    "received terminate, {} more to come {}",
+                                    self.missing_terminate, metadata.coord
                                 );
                                 continue;
                             }
@@ -218,7 +218,7 @@ impl<Out: ExchangeData, Receiver: StartBlockReceiver<Out> + Send> futures::Strea
                 // the previous iteration has ended, this message refers to the new iteration: we need to be
                 // sure the state is set before we let this message pass
                 if self.wait_for_state {
-                    log::debug!("Waiting for state!");
+                    tracing::debug!("Waiting for state!");
                     if let Some(lock) = self.state_lock.as_ref() {
                         lock.wait_for_update(self.state_generation);
                     }

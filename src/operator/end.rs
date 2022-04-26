@@ -83,7 +83,7 @@ where
 {
     type Item = StreamElement<()>;
 
-    #[tracing::instrument(name = "end_poll", skip_all)]
+    #[tracing::instrument(name = "end", skip_all)]
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         loop {
@@ -97,8 +97,8 @@ where
                     return Poll::Pending;
                 }
             }
+            
             // Proceed if all ready, yield otherwise
-
             if this.terminating {
                 this.senders.close();
                 return Poll::Ready(None);
@@ -139,19 +139,20 @@ where
                     this.senders.flush_all();
                 }
                 StreamElement::Terminate => {
-                    tracing::trace!("Broadcasting Terminate {}", this.metadata.as_ref().unwrap().coord);
+                    tracing::trace!("broadcast terminate {}", this.metadata.as_ref().unwrap().coord);
                     this.senders.broadcast_terminate();
                     this.terminating = true;
+                    return Poll::Ready(Some(StreamElement::Item(()))); // TODO: change, workaround because Terminate will stop the worker. That should be changed!
                 }
                 StreamElement::Item(item) | StreamElement::Timestamped(item, _) => {
                     let index = this.next_strategy.index(item);
                     this.senders.enqueue_indexed(index, message);
                 }
                 StreamElement::Yield => {
-                    log::error!("{} Received Yield from downstream", coord!(this));
+                    tracing::error!("{} Received Yield from downstream", coord!(this));
                 }
                 StreamElement::FlushBatch => {
-                    log::debug!("{} Received FlushBatch from downstream, marking for flush", coord!(this));
+                    tracing::debug!("{} Received FlushBatch from downstream, marking for flush", coord!(this));
                     this.senders.flush_all();
                 }
             };
@@ -294,12 +295,12 @@ impl<Out: ExchangeData> Senders<Out> {
         }
         if self.pending_flush.is_empty() {
             for (endpoint, sender) in &self.senders {
-                assert!(sender.is_idle(), "{} not flushed!", endpoint);
+                debug_assert!(sender.is_idle(), "{} not flushed!", endpoint);
             }
 
             Poll::Ready(Ok(()))
         } else {
-            log::debug!("not_flushed: {:?}", self.pending_flush);
+            // tracing::trace!("not_flushed: {:?}", self.pending_flush);
             Poll::Pending
         }
     }
