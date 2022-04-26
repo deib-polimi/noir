@@ -103,6 +103,8 @@ console-subscriber = "*"
 tempfile = "3.3"
 criterion = { version = "0.3", features = ["html_reports", "async_tokio"] }
 fake = "2.4"
+pprof = { version = "0.8", features = ["flamegraph", "criterion"] }
+mimalloc = { version = "0.1", default-features = false }
 
 # for the examples
 regex = "1.4.3"
@@ -140,3 +142,6 @@ harness = false
 
 [profile.release]
 # lto = "thin"
+
+[profile.bench]
+debug = true

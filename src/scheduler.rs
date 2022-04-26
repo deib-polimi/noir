@@ -321,13 +321,13 @@ impl Scheduler {
 
         let mut job_graph_generator = JobGraphGenerator::new();
         let mut block_structures = vec![];
-
+        
+        // static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(threads)
             .thread_name_fn(|| {
-                static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
-                let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
-                format!("noir-op-{:02}", id)
+                // let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+                format!("noir-op")
             })
             // .on_thread_start(|| coz::thread_init())
             .enable_time()
@@ -357,6 +357,7 @@ impl Scheduler {
         
         let job_graph = job_graph_generator.finalize();
         debug!("Job graph in dot format:\n{}", job_graph);
+        // ATOMIC_ID.store(0, Ordering::SeqCst);
         
         NoirJoinHandle {
             join,

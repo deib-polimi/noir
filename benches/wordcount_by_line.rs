@@ -15,6 +15,9 @@ use noir::StreamEnvironment;
 mod common;
 use common::*;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn make_file(lines: usize) -> tempfile::NamedTempFile {
     let mut file = tempfile::NamedTempFile::new().unwrap();
     let seed = b"By imDema, edomora97 and mark03.".to_owned();
@@ -31,8 +34,6 @@ fn make_file(lines: usize) -> tempfile::NamedTempFile {
 }
 
 fn wordcount_by_line_benchmark(c: &mut Criterion) {
-    tracing_subscriber::fmt::init();
-
     let mut group = c.benchmark_group("wordcount-line");
     group.sample_size(30);
     group.warm_up_time(Duration::from_secs(3));
@@ -160,6 +161,9 @@ fn wordcount_by_line_benchmark(c: &mut Criterion) {
     // });
     group.finish();
 }
-
-criterion_group!(benches, wordcount_by_line_benchmark);
+use pprof::criterion::{PProfProfiler, Output};
+criterion_group!(
+    name = benches;
+    config = Criterion::default(); //.with_profiler(PPRofProfiler::new(100, Output::Flamegraph(None)))
+    targets = wordcount_by_line_benchmark);
 criterion_main!(benches);
