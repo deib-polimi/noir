@@ -32,8 +32,8 @@ where
         let _result = (self.make_network)(n, &mut env);
         let start = Instant::now();
         let handle = env.execute_async(max_cpu_parallelism());
-        black_box(_result);
         handle.join().await;
+        black_box(_result);
         let duration = start.elapsed();
         duration
     }
@@ -46,10 +46,4 @@ pub fn noir_max_parallism_env() -> StreamEnvironment {
 pub fn noir_local_env(parallelism: usize) -> StreamEnvironment {
     let config = EnvironmentConfig::local(parallelism);
     StreamEnvironment::new(config)
-}
-
-pub fn max_cpu_parallelism() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
 }

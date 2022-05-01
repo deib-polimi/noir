@@ -8,15 +8,16 @@ use std::task::Context;
 use std::task::Poll;
 
 use futures::StreamExt;
-use futures::executor::block_on;
 use futures::ready;
 use tokio::io::AsyncBufReadExt;
-use tokio::io::{BufReader as BufReaderAsync, SeekFrom as SeekFromAsync};
+use tokio::io::BufReader as BufReaderAsync;
 use tokio::io::AsyncSeekExt;
 use tokio::fs::File as FileAsync;
 use tokio_stream::wrappers::LinesStream;
 
 use crate::block::{BlockStructure, OperatorKind, OperatorStructure};
+use crate::channel::Receiver;
+use crate::channel::channel;
 use crate::operator::source::Source;
 use crate::operator::{Operator, StreamElement};
 use crate::scheduler::ExecutionMetadata;
@@ -176,9 +177,7 @@ impl Clone for FileSource {
 pub struct FileSourceAsync {
     path: PathBuf,
     // reader is initialized in `setup`, before it is None
-    lines: Option<LinesStream<BufReaderAsync<FileAsync>>>,
-    current: usize,
-    end: usize,
+    rx: Option<Receiver<String>>,
     terminated: bool,
 }
 
@@ -208,9 +207,7 @@ impl FileSourceAsync {
     {
         Self {
             path: path.into(),
-            lines: Default::default(),
-            current: 0,
-            end: 0,
+            rx: Default::default(),
             terminated: false,
         }
     }
@@ -224,27 +221,35 @@ impl Source<String> for FileSourceAsync {
 }
 
 impl Operator<String> for FileSourceAsync {
+    #[tracing::instrument(name = "file_source_setup", skip(self))]
     fn setup(&mut self, metadata: ExecutionMetadata) {
         let global_id = metadata.global_id;
         let num_replicas = metadata.replicas.len();
 
-        block_on(async move { // TODO: Change
-            let file = FileAsync::open(&self.path).await.unwrap_or_else(|err| {
+        let (tx, rx) = channel(256);
+        self.rx = Some(rx);
+
+        let path = self.path.clone();
+        
+        tokio::spawn(async move {
+            let file = FileAsync::open(&path).await.unwrap_or_else(|err| {
                 panic!(
                     "FileSource: error while opening file {:?}: {:?}",
-                    self.path, err
+                    path, err
                 )
             });
             let file_size = file.metadata().await.unwrap().len() as usize;
     
             let range_size = file_size / num_replicas;
             let start = range_size * global_id;
-            self.current = start;
-            self.end = if global_id == num_replicas - 1 {
+            let mut current = start;
+            let end = if global_id == num_replicas - 1 {
                 file_size
             } else {
                 start + range_size
             };
+
+            tracing::debug!("start: {} end: {}", start, end);
     
             let mut reader = BufReaderAsync::new(file);
             // Seek reader to the first byte to be read
@@ -255,13 +260,37 @@ impl Operator<String> for FileSourceAsync {
             if global_id != 0 {
                 // discard first line
                 let mut s = String::new();
-                self.current += reader
+                current += reader
                     .read_line(&mut s)
                     .await
                     .expect("Cannot read line from file");
             }
-            self.lines = Some(LinesStream::new(reader.lines()));
-        })
+            let mut stream = LinesStream::new(reader.lines());
+
+            let mut ckp = 1024;
+            let t0 = std::time::Instant::now();
+
+            while current <= end {
+                if let Some(l) = stream.next().await {
+                    match l {
+                        Ok(line) if line.len() > 0 => {
+                            current += line.len();
+                            tx.send(line).await.unwrap();
+                            if current - start > ckp {
+                                ckp *= 2;
+                                let t = (current - start) as f32 / t0.elapsed().as_secs_f32();
+                                tracing::debug!("{:#?}MB/s", t / (1 << 20) as f32);
+                            }
+                        }
+                        Err(e) => panic!("Error while reading file: {:?}", e),
+                        Ok(_) => { }
+                    }
+                } else {
+                    break;
+                }
+            }
+            tracing::trace!("finished reader {}/{}", current, end);
+        });
     }
 
     fn next(&mut self) -> StreamElement<String> {
@@ -285,42 +314,27 @@ impl futures::Stream for FileSourceAsync {
     #[tracing::instrument(name = "file_source_async", skip_all)]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.terminated {
-            tracing::trace!("emitting terminate, finished {}/{}", self.current, self.end);
             return Poll::Ready(Some(StreamElement::Terminate));
         }
-        let element = if self.current <= self.end {
-            match ready!(self.lines.as_mut().expect("FileSourceAsync not initialized!").poll_next_unpin(cx))
-            {
-                Some(Ok(line)) if line.len() > 0 => {
-                    self.current += line.len();
-                    StreamElement::Item(line)
-                }
-                Some(Err(e)) => panic!("Error while reading file: {:?}", e),
-                _ => {
-                    self.terminated = true;
-                    StreamElement::FlushAndRestart
-                }
-            }
+
+        if let Some(l) = ready!(self.rx.as_mut().unwrap().poll_recv(cx)) {
+            Poll::Ready(Some(StreamElement::Item(l)))
         } else {
             self.terminated = true;
-            StreamElement::FlushAndRestart
-        };
-
-        Poll::Ready(Some(element))
+            Poll::Ready(Some(StreamElement::FlushAndRestart))
+        }
     }
 }
 
 impl Clone for FileSourceAsync {
     fn clone(&self) -> Self {
         assert!(
-            self.lines.is_none(),
+            self.rx.is_none(),
             "FileSource must be cloned before calling setup"
         );
         FileSourceAsync {
             path: self.path.clone(),
-            lines: None,
-            current: 0,
-            end: 0,
+            rx: None,
             terminated: false,
         }
     }

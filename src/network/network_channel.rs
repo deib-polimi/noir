@@ -85,7 +85,9 @@ impl<Out: ExchangeData> NetworkSender<Out> {
             NetworkSenderImpl::Local(sender) => {
                 sender.send(msg).await?;
             }
-            NetworkSenderImpl::Remote(_) => todo!(),
+            NetworkSenderImpl::Remote(sender) => {
+                sender.send(self.receiver_endpoint, msg).await?;
+            }
         }
         Ok(())
     }
@@ -191,4 +193,12 @@ impl<Out: ExchangeData> NetworkReceiver<Out> {
 pub enum NetworkSendError<T> {
     #[error("Local send error")]
     Local(#[from] SendError<NetworkMessage<T>>),
+    #[error("Remote send error")]
+    Remote(SendError<(ReceiverEndpoint, NetworkMessage<T>)>),
+}
+
+impl<T> From<SendError<(ReceiverEndpoint, NetworkMessage<T>)>> for NetworkSendError<T> {
+    fn from(e: SendError<(ReceiverEndpoint, NetworkMessage<T>)>) -> Self {
+        NetworkSendError::Remote(e)
+    }
 }

@@ -431,6 +431,8 @@ where
         Global: Fn(&mut NewOut, NewOut) + Send + Clone + Unpin + 'static,
     {
         // GroupBy based on key
+        // let next_strategy = NextStrategy::group_by(|(key, _out): &(Key, NewOut)| key.clone());
+
         let next_strategy = NextStrategy::GroupBy(
             move |(key, _out): &(Key, NewOut)| {
                 let mut s = ahash::AHasher::default();

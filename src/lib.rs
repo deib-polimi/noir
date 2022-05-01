@@ -31,7 +31,7 @@ use crate::profiler::ProfilerResult;
 pub(crate) mod block;
 pub mod channel;
 pub mod config;
-pub(crate) mod environment;
+pub mod environment;
 pub(crate) mod network;
 pub mod operator;
 mod profiler;

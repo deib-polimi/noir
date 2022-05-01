@@ -16,9 +16,7 @@ use crate::network::{Coord, NetworkTopology};
 use crate::operator::{Data, Operator, StreamElement};
 use crate::profiler::{wait_profiler, ProfilerResult};
 use crate::stream::BlockId;
-use crate::worker::{spawn_scoped_worker, spawn_async_worker};
-use crate::TracingData;
-
+use crate::worker::spawn_async_worker;
 /// The identifier of an host.
 pub type HostId = usize;
 /// The identifier of a replica of a block in the execution graph.
@@ -208,9 +206,10 @@ impl Scheduler {
         self.block_info.insert(block_id, info);
 
         for (coord, block) in blocks {
-            self.block_init.push(
-                (coord, Box::new(move |s, m| spawn_scoped_worker(s, block, m)))
-            );
+            todo!();
+            // self.block_init.push(
+            //     (coord, Box::new(move |s, m| spawn_scoped_worker(s, block, m)))
+            // );
         }
 
         // for (coord, block) in blocks {

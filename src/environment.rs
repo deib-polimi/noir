@@ -202,3 +202,9 @@ impl StreamEnvironmentInner {
             .expect("The environment has already been started, cannot access the scheduler")
     }
 }
+
+pub fn max_cpu_parallelism() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}

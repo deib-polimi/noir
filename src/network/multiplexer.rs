@@ -43,9 +43,14 @@ impl<Out: ExchangeData> MultiplexingSender<Out> {
     /// Send a message to the channel.
     ///
     /// Unlikely the normal channels, the destination is required since the channel is multiplexed.
-    pub fn send(&self, destination: ReceiverEndpoint, message: NetworkMessage<Out>) -> Result<(), SendError<(ReceiverEndpoint, NetworkMessage<Out>)>> {
+    pub fn send_blocking(&self, destination: ReceiverEndpoint, message: NetworkMessage<Out>) -> Result<(), SendError<(ReceiverEndpoint, NetworkMessage<Out>)>> {
         self.sender
             .blocking_send((destination, message))
+    }
+
+    pub async fn send(&self, destination: ReceiverEndpoint, message: NetworkMessage<Out>) -> Result<(), SendError<(ReceiverEndpoint, NetworkMessage<Out>)>> {
+        self.sender
+            .send((destination, message)).await
     }
 
     /// Connect the sender to a remote channel located at the specified address.

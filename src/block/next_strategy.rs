@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
-use rand::{thread_rng, Rng};
+use nanorand::{tls_rng, Rng};
 
 use crate::network::{NetworkSender, ReceiverEndpoint};
 use crate::operator::{ExchangeData, KeyerFn};
@@ -122,7 +122,7 @@ where
     pub fn index(&self, message: &Out) -> usize {
         match self {
             NextStrategy::OnlyOne | NextStrategy::All => 0,
-            NextStrategy::Random => thread_rng().gen(),
+            NextStrategy::Random => tls_rng().generate(),
             NextStrategy::GroupBy(keyer, _) => keyer(message),
         }
     }
