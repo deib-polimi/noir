@@ -185,7 +185,7 @@ impl Connection {
         strategy: &NextStrategy<T, IndexFn>,
     ) -> Self
     where
-        IndexFn: KeyerFn<usize, T>,
+        IndexFn: KeyerFn<u64, T>,
     {
         Self {
             to_block_id,
@@ -197,7 +197,7 @@ impl Connection {
 
 impl<Out: ExchangeData, IndexFn> From<&NextStrategy<Out, IndexFn>> for ConnectionStrategy
 where
-    IndexFn: KeyerFn<usize, Out>,
+    IndexFn: KeyerFn<u64, Out>,
 {
     fn from(strategy: &NextStrategy<Out, IndexFn>) -> Self {
         match strategy {

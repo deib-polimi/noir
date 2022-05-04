@@ -22,7 +22,7 @@ env_logger = "0.9"
 typemap = "0.3"
 
 # the shuffle() operator requires a random source
-rand = "0.8"
+nanorand = "0.7"
 
 # utility macros for customizing the derive Debug, Default, ...
 derivative = "2.2"
@@ -80,6 +80,7 @@ parking_lot = "0.12"
 once_cell = "1.9"
 
 ahash = "0.7"
+wyhash = "0.5"
 
 rayon = "1.5"
 
@@ -100,11 +101,13 @@ console-subscriber = "*"
 
 [dev-dependencies]
 # for the tests
+rand = "0.8"
 tempfile = "3.3"
 criterion = { version = "0.3", features = ["html_reports", "async_tokio"] }
 fake = "2.4"
 pprof = { version = "0.8", features = ["flamegraph", "criterion"] }
 mimalloc = { version = "0.1", default-features = false }
+tracing-subscriber = "0.3"
 
 # for the examples
 regex = "1.4.3"

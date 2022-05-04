@@ -216,8 +216,14 @@ fn spawn_remote_worker(
             eprintln!("{}|{}", host_id, line);
         }
     }
+    let reader = BufReader::new(&mut channel);
+
+    for l in reader.lines() {
+        println!("{}|{}", host_id, l.unwrap_or_else(|e| format!("ERROR: {}", e)));
+    }
+
     channel.wait_close().unwrap();
-    info!("Exit status: {}", channel.exit_status().unwrap());
+    info!("{}|Exit status: {}", host_id, channel.exit_status().unwrap());
 
     let execution_time = execution_start.elapsed();
 

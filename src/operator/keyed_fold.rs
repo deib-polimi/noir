@@ -1,14 +1,13 @@
 use core::iter::Iterator;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::hash::Hasher;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures::{ready, StreamExt};
 
-use crate::block::{BlockStructure, NextStrategy, OperatorStructure};
+use crate::block::{BlockStructure, NextStrategy, OperatorStructure, group_by_hash};
 use crate::operator::end::EndBlock;
 use crate::operator::key_by::KeyBy;
 use crate::operator::{
@@ -299,11 +298,7 @@ where
     {
         // GroupBy based on key
         let next_strategy = NextStrategy::GroupBy(
-            move |(key, _out): &(Key, NewOut)| {
-                let mut s = ahash::AHasher::default();
-                key.hash(&mut s);
-                s.finish() as usize
-            },
+            move |(key, _): &(Key, NewOut)| group_by_hash(&key),
             Default::default(),
         );
 

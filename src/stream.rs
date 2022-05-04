@@ -157,7 +157,7 @@ where
         next_strategy: NextStrategy<Out, IndexFn>,
     ) -> Stream<Out, impl Operator<Out>>
     where
-        IndexFn: KeyerFn<usize, Out>,
+        IndexFn: KeyerFn<u64, Out>,
         Out: ExchangeData,
         Op: Operator<()> + 'static,
         GetEndOp: FnOnce(OperatorChain, NextStrategy<Out, IndexFn>, BatchMode) -> Op,
@@ -211,8 +211,8 @@ where
     where
         Out: ExchangeData,
         Out2: ExchangeData,
-        IndexFn1: KeyerFn<usize, Out>,
-        IndexFn2: KeyerFn<usize, Out2>,
+        IndexFn1: KeyerFn<u64, Out>,
+        IndexFn2: KeyerFn<u64, Out2>,
         OperatorChain2: Operator<Out2> + 'static,
         NewOut: Data,
         StartOperator: Operator<NewOut>,

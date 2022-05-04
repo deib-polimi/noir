@@ -17,9 +17,9 @@ pub(crate) struct SenderList(pub Vec<ReceiverEndpoint>);
 /// A block in the job graph may have many next blocks. Each of them will receive the message, which
 /// of their replica will receive it depends on the value of the next strategy.
 #[derive(Clone, Debug)]
-pub(crate) enum NextStrategy<Out: ExchangeData, IndexFn = fn(&Out) -> usize>
+pub(crate) enum NextStrategy<Out: ExchangeData, IndexFn = fn(&Out) -> u64>
 where
-    IndexFn: KeyerFn<usize, Out>,
+    IndexFn: KeyerFn<u64, Out>,
 {
     /// Only one of the replicas will receive the message:
     ///
@@ -40,16 +40,12 @@ impl<Out: ExchangeData> NextStrategy<Out> {
     /// Build a `NextStrategy` from a keyer function.
     pub(crate) fn group_by<Key: Hash, Keyer>(
         keyer: Keyer,
-    ) -> NextStrategy<Out, impl KeyerFn<usize, Out>>
+    ) -> NextStrategy<Out, impl KeyerFn<u64, Out>>
     where
         Keyer: KeyerFn<Key, Out>,
     {
         NextStrategy::GroupBy(
-            move |item: &Out| {
-                let mut s = ahash::AHasher::default();
-                keyer(item).hash(&mut s);
-                s.finish() as usize
-            },
+            move |item: &Out | group_by_hash(&keyer(item)),
             Default::default(),
         )
     }
@@ -72,7 +68,7 @@ impl<Out: ExchangeData> NextStrategy<Out> {
 
 impl<Out: ExchangeData, IndexFn> NextStrategy<Out, IndexFn>
 where
-    IndexFn: KeyerFn<usize, Out>,
+    IndexFn: KeyerFn<u64, Out>,
 {
     /// Group the senders from a block using the current next strategy.
     ///
@@ -123,7 +119,13 @@ where
         match self {
             NextStrategy::OnlyOne | NextStrategy::All => 0,
             NextStrategy::Random => tls_rng().generate(),
-            NextStrategy::GroupBy(keyer, _) => keyer(message),
+            NextStrategy::GroupBy(keyer, _) => keyer(message) as usize,
         }
     }
+}
+
+pub fn group_by_hash<T: Hash>(item: &T) -> u64 {
+    let mut hasher = wyhash::WyHash::with_seed(0x0123456789abcdef);
+    item.hash(&mut hasher);
+    hasher.finish()
 }

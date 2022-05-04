@@ -1,0 +1,283 @@
+[2m2022-05-02T17:32:17.796882Z[0m [32m INFO[0m [2mnoir::environment[0m[2m:[0m Constructing environment    
+[2m2022-05-02T17:32:17.796903Z[0m [32m INFO[0m [2mnoir::runner[0m[2m:[0m Spawning 2 remote workers    
+[2m2022-05-02T17:32:17.797055Z[0m [32m INFO[0m [2mnoir::runner[0m[2m:[0m Spawning remote worker for host 0: RemoteHostConfig {
+    address: "10.10.10.24",
+    base_port: 26670,
+    num_cores: 12,
+    ssh: RemoteHostSSHConfig {
+        ssh_port: 22,
+        username: Some(
+            "noir",
+        ),
+        password: Some(
+            "noir-test-pass",
+        ),
+        key_file: None,
+        key_passphrase: None,
+    },
+    perf_path: None,
+}    
+[2m2022-05-02T17:32:17.797072Z[0m [32m INFO[0m [2mnoir::runner[0m[2m:[0m Spawning remote worker for host 1: RemoteHostConfig {
+    address: "10.10.10.28",
+    base_port: 26670,
+    num_cores: 6,
+    ssh: RemoteHostSSHConfig {
+        ssh_port: 22,
+        username: Some(
+            "noir",
+        ),
+        password: Some(
+            "noir-test-pass",
+        ),
+        key_file: None,
+        key_passphrase: None,
+    },
+    perf_path: None,
+}    
+1|[2m2022-05-02T17:32:19.250799Z[0m [32m INFO[0m [2mnoir::config[0m[2m:[0m Reading remote config from env noir_CONFIG    
+1|[2m2022-05-02T17:32:19.250930Z[0m [32m INFO[0m [2mnoir::environment[0m[2m:[0m Constructing environment    
+1|[2m2022-05-02T17:32:19.251066Z[0m [32m INFO[0m [2mnoir::environment[0m[2m:[0m Creating a new block, id=0    
+1|[2m2022-05-02T17:32:19.251085Z[0m [32m INFO[0m [2mnoir::environment[0m[2m:[0m Creating a new stream, block_id=0 with max_parallelism None    
+1|[2m2022-05-02T17:32:19.251114Z[0m [32m INFO[0m [2mnoir::environment[0m[2m:[0m Creating a new block, id=1    
+1|[2m2022-05-02T17:32:19.251145Z[0m [32m INFO[0m [2mnoir::scheduler[0m[2m:[0m Adding new block id=0: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+1|[2m2022-05-02T17:32:19.251444Z[0m [32m INFO[0m [2mnoir::scheduler[0m[2m:[0m Connecting blocks: 0 -> 1    
+1|[2m2022-05-02T17:32:19.251521Z[0m [32m INFO[0m [2mnoir::environment[0m[2m:[0m Creating a new block, id=2    
+1|[2m2022-05-02T17:32:19.251540Z[0m [32m INFO[0m [2mnoir::scheduler[0m[2m:[0m Adding new block id=1: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+1|[2m2022-05-02T17:32:19.251990Z[0m [32m INFO[0m [2mnoir::scheduler[0m[2m:[0m Connecting blocks: 1 -> 2    
+1|[2m2022-05-02T17:32:19.252002Z[0m [32m INFO[0m [2mnoir::stream[0m[2m:[0m Finalizing block id=2    
+1|[2m2022-05-02T17:32:19.252012Z[0m [32m INFO[0m [2mnoir::scheduler[0m[2m:[0m Adding new block id=2: [(alloc::string::String, usize)] -> CollectVecSink    
+1|[2m2022-05-02T17:32:19.252026Z[0m [32m INFO[0m [2mnoir::profiler[0m[2m:[0m timens:build:1063737    
+1|[2m2022-05-02T17:32:19.252034Z[0m [32m INFO[0m [2mnoir::environment[0m[2m:[0m Starting execution of 3 blocks    
+1|[2m2022-05-02T17:32:19.252040Z[0m [32m INFO[0m [2mnoir::scheduler[0m[2m:[0m Starting scheduler: EnvironmentConfig {
+1|    runtime: Remote(
+1|        RemoteRuntimeConfig {
+1|            hosts: [
+1|                RemoteHostConfig {
+1|                    address: "10.10.10.24",
+1|                    base_port: 26670,
+1|                    num_cores: 12,
+1|                    ssh: RemoteHostSSHConfig {
+1|                        ssh_port: 22,
+1|                        username: Some(
+1|                            "noir",
+1|                        ),
+1|                        password: Some(
+1|                            "noir-test-pass",
+1|                        ),
+1|                        key_file: None,
+1|                        key_passphrase: None,
+1|                    },
+1|                    perf_path: None,
+1|                },
+1|                RemoteHostConfig {
+1|                    address: "10.10.10.28",
+1|                    base_port: 26670,
+1|                    num_cores: 6,
+1|                    ssh: RemoteHostSSHConfig {
+1|                        ssh_port: 22,
+1|                        username: Some(
+1|                            "noir",
+1|                        ),
+1|                        password: Some(
+1|                            "noir-test-pass",
+1|                        ),
+1|                        key_file: None,
+1|                        key_passphrase: None,
+1|                    },
+1|                    perf_path: None,
+1|                },
+1|            ],
+1|            tracing_dir: None,
+1|        },
+1|    ),
+1|    host_id: Some(
+1|        1,
+1|    ),
+1|    skip_single_remote_check: false,
+1|}    
+1|[2m2022-05-02T17:32:19.252570Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h1, r0]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+1|[2m2022-05-02T17:32:19.252570Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h1, r0]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+1|[2m2022-05-02T17:32:19.252579Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h1, r3]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+1|[2m2022-05-02T17:32:19.252593Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h1, r4]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+1|[2m2022-05-02T17:32:19.252572Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h1, r1]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+1|[2m2022-05-02T17:32:19.252595Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h1, r2]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+1|[2m2022-05-02T17:32:19.252582Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h1, r5]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+1|[2m2022-05-02T17:32:19.252721Z[0m [32m INFO[0m [2mnoir::network::demultiplexer[0m[2m:[0m Remote receiver at DemuxCoord[BlockCoord[b1, h1], prev 0] is ready to accept 1 connections to 10.10.10.28:26670    
+1|[2m2022-05-02T17:32:19.253387Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h1, r1]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+1|[2m2022-05-02T17:32:19.253590Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h1, r2]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+1|[2m2022-05-02T17:32:19.253682Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h1, r4]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+1|[2m2022-05-02T17:32:19.253693Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h1, r3]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+1|[2m2022-05-02T17:32:19.263640Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h1, r5]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+1|[2m2022-05-02T17:32:20.051236Z[0m [32m INFO[0m [2mnoir::network::demultiplexer[0m[2m:[0m Remote receiver at DemuxCoord[BlockCoord[b1, h1], prev 0] accepted a new connection from 10.10.10.24:53200 (1 / 1)    
+1|[2m2022-05-02T17:32:32.433135Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h1, r1] completed, exiting    
+1|[2m2022-05-02T17:32:34.049619Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h1, r0] completed, exiting    
+1|[2m2022-05-02T17:32:34.277256Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h1, r2] completed, exiting    
+1|[2m2022-05-02T17:32:35.355893Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h1, r3] completed, exiting    
+1|[2m2022-05-02T17:32:35.382683Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h1, r5] completed, exiting    
+1|[2m2022-05-02T17:32:35.414934Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h1, r4] completed, exiting    
+1|[2m2022-05-02T17:32:39.175631Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h1, r0] is emitting flush and restart    
+1|[2m2022-05-02T17:32:39.180400Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h1, r1] is emitting flush and restart    
+1|[2m2022-05-02T17:32:39.181206Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h1, r2] is emitting flush and restart    
+1|[2m2022-05-02T17:32:39.183449Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h1, r3] is emitting flush and restart    
+1|[2m2022-05-02T17:32:39.186609Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h1, r4] is emitting flush and restart    
+1|[2m2022-05-02T17:32:39.186820Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h1, r5] is emitting flush and restart    
+1|[2m2022-05-02T17:32:43.845796Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h1, r1] has ended    
+1|[2m2022-05-02T17:32:43.847059Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h1, r1] completed, exiting    
+1|[2m2022-05-02T17:32:43.847841Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h1, r2] has ended    
+1|[2m2022-05-02T17:32:43.848943Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h1, r2] completed, exiting    
+1|[2m2022-05-02T17:32:44.092789Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h1, r3] has ended    
+1|[2m2022-05-02T17:32:44.093673Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h1, r3] completed, exiting    
+1|[2m2022-05-02T17:32:44.172399Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h1, r0] has ended    
+1|[2m2022-05-02T17:32:44.173060Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h1, r0] completed, exiting    
+1|[2m2022-05-02T17:32:44.174700Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h1, r4] has ended    
+1|[2m2022-05-02T17:32:44.174894Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h1, r4] completed, exiting    
+1|[2m2022-05-02T17:32:44.175437Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h1, r5] has ended    
+1|[2m2022-05-02T17:32:44.175635Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h1, r5] completed, exiting    
+1|[2m2022-05-02T17:32:44.394974Z[0m [32m INFO[0m [2mnoir::profiler[0m[2m:[0m timens:execution:25142935480    
+[2m2022-05-02T17:32:44.408090Z[0m [32m INFO[0m [2mnoir::runner[0m[2m:[0m 1|Exit status: 0    
+0|[2m2022-05-02T17:32:18.180281Z[0m [32m INFO[0m [2mnoir::config[0m[2m:[0m Reading remote config from env noir_CONFIG    
+0|[2m2022-05-02T17:32:18.180334Z[0m [32m INFO[0m [2mnoir::environment[0m[2m:[0m Constructing environment    
+0|[2m2022-05-02T17:32:18.180391Z[0m [32m INFO[0m [2mnoir::environment[0m[2m:[0m Creating a new block, id=0    
+0|[2m2022-05-02T17:32:18.180393Z[0m [32m INFO[0m [2mnoir::environment[0m[2m:[0m Creating a new stream, block_id=0 with max_parallelism None    
+0|[2m2022-05-02T17:32:18.180400Z[0m [32m INFO[0m [2mnoir::environment[0m[2m:[0m Creating a new block, id=1    
+0|[2m2022-05-02T17:32:18.180409Z[0m [32m INFO[0m [2mnoir::scheduler[0m[2m:[0m Adding new block id=0: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+0|[2m2022-05-02T17:32:18.180651Z[0m [32m INFO[0m [2mnoir::scheduler[0m[2m:[0m Connecting blocks: 0 -> 1    
+0|[2m2022-05-02T17:32:18.180657Z[0m [32m INFO[0m [2mnoir::environment[0m[2m:[0m Creating a new block, id=2    
+0|[2m2022-05-02T17:32:18.180662Z[0m [32m INFO[0m [2mnoir::scheduler[0m[2m:[0m Adding new block id=1: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+0|[2m2022-05-02T17:32:18.180896Z[0m [32m INFO[0m [2mnoir::scheduler[0m[2m:[0m Connecting blocks: 1 -> 2    
+0|[2m2022-05-02T17:32:18.180900Z[0m [32m INFO[0m [2mnoir::stream[0m[2m:[0m Finalizing block id=2    
+0|[2m2022-05-02T17:32:18.180904Z[0m [32m INFO[0m [2mnoir::scheduler[0m[2m:[0m Adding new block id=2: [(alloc::string::String, usize)] -> CollectVecSink    
+0|[2m2022-05-02T17:32:18.180929Z[0m [32m INFO[0m [2mnoir::profiler[0m[2m:[0m timens:build:584016    
+0|[2m2022-05-02T17:32:18.180932Z[0m [32m INFO[0m [2mnoir::environment[0m[2m:[0m Starting execution of 3 blocks    
+0|[2m2022-05-02T17:32:18.180933Z[0m [32m INFO[0m [2mnoir::scheduler[0m[2m:[0m Starting scheduler: EnvironmentConfig {
+0|    runtime: Remote(
+0|        RemoteRuntimeConfig {
+0|            hosts: [
+0|                RemoteHostConfig {
+0|                    address: "10.10.10.24",
+0|                    base_port: 26670,
+0|                    num_cores: 12,
+0|                    ssh: RemoteHostSSHConfig {
+0|                        ssh_port: 22,
+0|                        username: Some(
+0|                            "noir",
+0|                        ),
+0|                        password: Some(
+0|                            "noir-test-pass",
+0|                        ),
+0|                        key_file: None,
+0|                        key_passphrase: None,
+0|                    },
+0|                    perf_path: None,
+0|                },
+0|                RemoteHostConfig {
+0|                    address: "10.10.10.28",
+0|                    base_port: 26670,
+0|                    num_cores: 6,
+0|                    ssh: RemoteHostSSHConfig {
+0|                        ssh_port: 22,
+0|                        username: Some(
+0|                            "noir",
+0|                        ),
+0|                        password: Some(
+0|                            "noir-test-pass",
+0|                        ),
+0|                        key_file: None,
+0|                        key_passphrase: None,
+0|                    },
+0|                    perf_path: None,
+0|                },
+0|            ],
+0|            tracing_dir: None,
+0|        },
+0|    ),
+0|    host_id: Some(
+0|        0,
+0|    ),
+0|    skip_single_remote_check: false,
+0|}    
+0|[2m2022-05-02T17:32:18.181148Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h0, r7]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+0|[2m2022-05-02T17:32:18.181149Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h0, r3]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+0|[2m2022-05-02T17:32:18.181154Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h0, r4]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+0|[2m2022-05-02T17:32:18.181156Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h0, r6]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+0|[2m2022-05-02T17:32:18.181160Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h0, r1]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+0|[2m2022-05-02T17:32:18.181161Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h0, r5]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+0|[2m2022-05-02T17:32:18.181160Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h0, r2]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+0|[2m2022-05-02T17:32:18.181160Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h0, r0]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+0|[2m2022-05-02T17:32:18.181289Z[0m [32m INFO[0m [2mnoir::network::demultiplexer[0m[2m:[0m Remote receiver at DemuxCoord[BlockCoord[b1, h0], prev 0] is ready to accept 1 connections to 10.10.10.24:26670    
+0|[2m2022-05-02T17:32:18.181395Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h0, r8]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+0|[2m2022-05-02T17:32:18.183596Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h0, r2]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+0|[2m2022-05-02T17:32:18.183619Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h0, r9]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+0|[2m2022-05-02T17:32:18.183617Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h0, r0]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+0|[2m2022-05-02T17:32:18.183598Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h0, r10]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+0|[2m2022-05-02T17:32:18.183608Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h0, r1]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+0|[2m2022-05-02T17:32:18.183615Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h0, r5]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+0|[2m2022-05-02T17:32:18.183675Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b2, h0, r0]: [(alloc::string::String, usize)] -> CollectVecSink    
+0|[2m2022-05-02T17:32:18.183710Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h0, r10]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+0|[2m2022-05-02T17:32:18.183716Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h0, r11]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+0|[2m2022-05-02T17:32:18.187085Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h0, r9]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+0|[2m2022-05-02T17:32:18.187104Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h0, r7]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+0|[2m2022-05-02T17:32:18.187151Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h0, r3]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+0|[2m2022-05-02T17:32:18.184100Z[0m [32m INFO[0m [2mnoir::network::demultiplexer[0m[2m:[0m Remote receiver at DemuxCoord[BlockCoord[b2, h0], prev 1] is ready to accept 1 connections to 10.10.10.24:26671    
+0|[2m2022-05-02T17:32:18.187274Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b0, h0, r11]: FileSource<alloc::string::String> -> Map<alloc::string::String -> alloc::vec::Vec<alloc::string::String>> -> Flatten<alloc::vec::Vec<alloc::string::String> -> alloc::string::String> -> KeyBy<alloc::string::String> -> KeyedFold<(alloc::string::String, alloc::string::String) -> (alloc::string::String, usize)>    
+0|[2m2022-05-02T17:32:18.187298Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h0, r8]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+0|[2m2022-05-02T17:32:18.187289Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h0, r6]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+0|[2m2022-05-02T17:32:18.187293Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Starting worker for Coord[b1, h0, r4]: [(alloc::string::String, usize)] -> KeyedFold<(alloc::string::String, usize) -> (alloc::string::String, usize)> -> OnlyOne    
+0|[2m2022-05-02T17:32:19.237464Z[0m [32m INFO[0m [2mnoir::network::demultiplexer[0m[2m:[0m Remote receiver at DemuxCoord[BlockCoord[b1, h0], prev 0] accepted a new connection from 10.10.10.28:48648 (1 / 1)    
+0|[2m2022-05-02T17:32:19.238579Z[0m [32m INFO[0m [2mnoir::network::demultiplexer[0m[2m:[0m Remote receiver at DemuxCoord[BlockCoord[b2, h0], prev 1] accepted a new connection from 10.10.10.28:40522 (1 / 1)    
+0|[2m2022-05-02T17:32:35.005083Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h0, r4] completed, exiting    
+0|[2m2022-05-02T17:32:35.635599Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h0, r3] completed, exiting    
+0|[2m2022-05-02T17:32:37.682645Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h0, r10] completed, exiting    
+0|[2m2022-05-02T17:32:37.847437Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h0, r5] completed, exiting    
+0|[2m2022-05-02T17:32:38.157974Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h0, r11] completed, exiting    
+0|[2m2022-05-02T17:32:38.295312Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h0, r0] completed, exiting    
+0|[2m2022-05-02T17:32:38.442236Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h0, r8] completed, exiting    
+0|[2m2022-05-02T17:32:38.460596Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h0, r6] completed, exiting    
+0|[2m2022-05-02T17:32:38.464395Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h0, r2] completed, exiting    
+0|[2m2022-05-02T17:32:38.464411Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h0, r9] completed, exiting    
+0|[2m2022-05-02T17:32:38.591074Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h0, r7] completed, exiting    
+0|[2m2022-05-02T17:32:38.880860Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r0] is emitting flush and restart    
+0|[2m2022-05-02T17:32:38.881115Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r6] is emitting flush and restart    
+0|[2m2022-05-02T17:32:38.881279Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r7] is emitting flush and restart    
+0|[2m2022-05-02T17:32:38.881303Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r8] is emitting flush and restart    
+0|[2m2022-05-02T17:32:38.881284Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r9] is emitting flush and restart    
+0|[2m2022-05-02T17:32:38.881310Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r1] is emitting flush and restart    
+0|[2m2022-05-02T17:32:38.881288Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r3] is emitting flush and restart    
+0|[2m2022-05-02T17:32:38.881297Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r2] is emitting flush and restart    
+0|[2m2022-05-02T17:32:38.881422Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r4] is emitting flush and restart    
+0|[2m2022-05-02T17:32:38.881469Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r5] is emitting flush and restart    
+0|[2m2022-05-02T17:32:38.881559Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r11] is emitting flush and restart    
+0|[2m2022-05-02T17:32:38.881577Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b0, h0, r1] completed, exiting    
+0|[2m2022-05-02T17:32:38.881600Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r10] is emitting flush and restart    
+0|[2m2022-05-02T17:32:39.069650Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r0] has ended    
+0|[2m2022-05-02T17:32:39.069941Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h0, r0] completed, exiting    
+0|[2m2022-05-02T17:32:39.071448Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r11] has ended    
+0|[2m2022-05-02T17:32:39.071565Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h0, r11] completed, exiting    
+0|[2m2022-05-02T17:32:39.072064Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r1] has ended    
+0|[2m2022-05-02T17:32:39.072185Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h0, r1] completed, exiting    
+0|[2m2022-05-02T17:32:39.077851Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r5] has ended    
+0|[2m2022-05-02T17:32:39.077911Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h0, r5] completed, exiting    
+0|[2m2022-05-02T17:32:39.078056Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r2] has ended    
+0|[2m2022-05-02T17:32:39.078100Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h0, r2] completed, exiting    
+0|[2m2022-05-02T17:32:39.078829Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r6] has ended    
+0|[2m2022-05-02T17:32:39.078836Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h0, r6] completed, exiting    
+0|[2m2022-05-02T17:32:39.080131Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r4] has ended    
+0|[2m2022-05-02T17:32:39.080138Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h0, r4] completed, exiting    
+0|[2m2022-05-02T17:32:39.081756Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r10] has ended    
+0|[2m2022-05-02T17:32:39.081763Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h0, r10] completed, exiting    
+0|[2m2022-05-02T17:32:39.083471Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r7] has ended    
+0|[2m2022-05-02T17:32:39.083488Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h0, r7] completed, exiting    
+0|[2m2022-05-02T17:32:39.084544Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r9] has ended    
+0|[2m2022-05-02T17:32:39.084552Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h0, r9] completed, exiting    
+0|[2m2022-05-02T17:32:39.085263Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r3] has ended    
+0|[2m2022-05-02T17:32:39.085270Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h0, r3] completed, exiting    
+0|[2m2022-05-02T17:32:39.085626Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b1, h0, r8] has ended    
+0|[2m2022-05-02T17:32:39.085631Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b1, h0, r8] completed, exiting    
+0|[2m2022-05-02T17:32:44.372658Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b2, h0, r0] is emitting flush and restart    
+0|[2m2022-05-02T17:32:44.372670Z[0m [32m INFO[0m [2mnoir::operator::start[0m[2m:[0m StartBlock for Coord[b2, h0, r0] has ended    
+0|[2m2022-05-02T17:32:44.372676Z[0m [32m INFO[0m [2mnoir::worker[0m[2m:[0m Worker Coord[b2, h0, r0] completed, exiting    
+0|[2m2022-05-02T17:32:44.373253Z[0m [32m INFO[0m [2mnoir::profiler[0m[2m:[0m timens:execution:26192316287    
+[2m2022-05-02T17:32:45.905469Z[0m [32m INFO[0m [2mnoir::runner[0m[2m:[0m 0|Exit status: 0    
+[2m2022-05-02T17:32:45.909429Z[0m [32m INFO[0m [2mnoir::profiler[0m[2m:[0m timens:max-remote-execution:27726770751    
+[2m2022-05-02T17:32:45.909451Z[0m [32m INFO[0m [2mnoir::profiler[0m[2m:[0m timens:max-remote-sync:1171482306    
+[2m2022-05-02T17:32:45.909457Z[0m [32m INFO[0m [2mnoir::profiler[0m[2m:[0m timens:wall:28112554227    
