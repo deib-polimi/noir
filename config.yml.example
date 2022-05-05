@@ -1,29 +1,43 @@
 # Directory where to store the tracing data in JSON
 # tracing_dir: ./tracing
 hosts:
-  - address: localhost
-    base_port: 9500
-    num_cores: 4
+  - address: 10.10.10.24
+    base_port: 26670
+    num_cores: 12
+    #  # Which port to use to connect via ssh, defaults to 22.
+    #  ssh_port: 22
+    #  # Username of the remote host. When missing the local username is used.
+    ssh:
+    #  # Which port to use to connect via ssh, defaults to 22.
+    #  ssh_port: 22
+    #  # Username of the remote host. When missing the local username is used.
+      # username: dema
+    #  # Password of the remote user. When missing the key_file is used.
+    #  password: password
+    #  # Path to the private ssh key to use for the authentication.
+      username: noir
+      password: noir-test-pass
+      # key_file: /home/dema/.ssh/id_ed25519
   - # IP address or domain name of the remote host.
-    address: localhost
+    address: 10.10.10.28
     # Initial port to use, note that more than one port will be used.
-    base_port: 9600
+    base_port: 26670
     # Number of replicas to spawn in this host.
-    num_cores: 4
+    num_cores: 6
     # If specified run the remote program using perf recording a profile
     # perf_path: /tmp/perf.data
     # Optional ssh configuration to this remote host. When missing ssh-agent
     # will be prompt for the missing information. If ssh-agent is not present
     # you need to specify `username` and one of the authentication methods.
-    #ssh:
+    ssh:
     #  # Which port to use to connect via ssh, defaults to 22.
     #  ssh_port: 22
     #  # Username of the remote host. When missing the local username is used.
-    #  username: user
     #  # Password of the remote user. When missing the key_file is used.
     #  password: password
     #  # Path to the private ssh key to use for the authentication.
-    #  key_file: /home/user/.ssh/id_rsa
+      username: noir
+      password: noir-test-pass
     #  # Passphrase of the private key file. When missing it's assumed the key
     #  # is not protected. When using the ssh-agent the passphrase may be
     #  # omitted.

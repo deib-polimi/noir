@@ -5,7 +5,7 @@ use futures::{Sink, SinkExt};
 use nanorand::Rng;
 use tokio_util::sync::ReusableBoxFuture;
 
-use crate::channel::{channel, Receiver, SelectResult, Sender, PollSender, SendError};
+use crate::channel::{channel, Receiver, SelectResult, Sender, SendError};
 use crate::network::{NetworkMessage, ReceiverEndpoint};
 use crate::network::multiplexer::MultiplexingSender;
 use crate::operator::ExchangeData;

@@ -7,6 +7,7 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
+use futures::Future;
 use futures::StreamExt;
 use futures::ready;
 use tokio::io::AsyncBufReadExt;
@@ -14,6 +15,7 @@ use tokio::io::BufReader as BufReaderAsync;
 use tokio::io::AsyncSeekExt;
 use tokio::fs::File as FileAsync;
 use tokio_stream::wrappers::LinesStream;
+use tokio_util::sync::ReusableBoxFuture;
 
 use crate::block::{BlockStructure, OperatorKind, OperatorStructure};
 use crate::channel::Receiver;
@@ -177,8 +179,18 @@ impl Clone for FileSource {
 pub struct FileSourceAsync {
     path: PathBuf,
     // reader is initialized in `setup`, before it is None
-    rx: Option<Receiver<String>>,
+    rx_fut: ReusableBoxFuture<'static, (Option<String>, Receiver<String>)>,
     terminated: bool,
+}
+
+async fn make_recv_future(rx: Option<Receiver<String>>) -> (Option<String>, Receiver<String>) {
+    match rx {
+        Some(mut rx) => {
+            let value = rx.recv().await;
+            (value, rx)
+        }
+        None => unreachable!(),
+    }
 }
 
 impl FileSourceAsync {
@@ -207,7 +219,7 @@ impl FileSourceAsync {
     {
         Self {
             path: path.into(),
-            rx: Default::default(),
+            rx_fut: ReusableBoxFuture::new(make_recv_future(None)),
             terminated: false,
         }
     }
@@ -227,10 +239,11 @@ impl Operator<String> for FileSourceAsync {
         let num_replicas = metadata.replicas.len();
 
         let (tx, rx) = channel(256);
-        self.rx = Some(rx);
+        self.rx_fut.set(make_recv_future(Some(rx)));
 
         let path = self.path.clone();
         
+        let coord = metadata.coord;
         tokio::spawn(async move {
             let file = FileAsync::open(&path).await.unwrap_or_else(|err| {
                 panic!(
@@ -279,7 +292,7 @@ impl Operator<String> for FileSourceAsync {
                             if current - start > ckp {
                                 ckp *= 2;
                                 let t = (current - start) as f32 / t0.elapsed().as_secs_f32();
-                                tracing::debug!("{:#?}MB/s", t / (1 << 20) as f32);
+                                tracing::debug!("{}: {:#?}MB/s", coord , t / (1 << 20) as f32);
                             }
                         }
                         Err(e) => panic!("Error while reading file: {:?}", e),
@@ -317,7 +330,8 @@ impl futures::Stream for FileSourceAsync {
             return Poll::Ready(Some(StreamElement::Terminate));
         }
 
-        if let Some(l) = ready!(self.rx.as_mut().unwrap().poll_recv(cx)) {
+        if let (Some(l), rx) = ready!(self.rx_fut.poll(cx)) {
+            self.rx_fut.set(make_recv_future(Some(rx)));
             Poll::Ready(Some(StreamElement::Item(l)))
         } else {
             self.terminated = true;
@@ -328,13 +342,9 @@ impl futures::Stream for FileSourceAsync {
 
 impl Clone for FileSourceAsync {
     fn clone(&self) -> Self {
-        assert!(
-            self.rx.is_none(),
-            "FileSource must be cloned before calling setup"
-        );
         FileSourceAsync {
             path: self.path.clone(),
-            rx: None,
+            rx_fut: ReusableBoxFuture::new(make_recv_future(None)),
             terminated: false,
         }
     }

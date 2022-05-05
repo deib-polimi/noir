@@ -429,11 +429,7 @@ where
         // let next_strategy = NextStrategy::group_by(|(key, _out): &(Key, NewOut)| key.clone());
 
         let next_strategy = NextStrategy::GroupBy(
-            move |(key, _out): &(Key, NewOut)| {
-                let mut s = ahash::AHasher::default();
-                key.hash(&mut s);
-                s.finish() as usize
-            },
+            move |(key, _out): &(Key, NewOut)| group_by_hash(key),
             Default::default(),
         );
 

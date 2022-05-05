@@ -78,7 +78,7 @@ where
 impl<Out: ExchangeData, OperatorChain, IndexFn> futures::Stream
     for EndBlock<Out, OperatorChain, IndexFn>
 where
-    IndexFn: KeyerFn<usize, Out>,
+    IndexFn: KeyerFn<u64, Out>,
     OperatorChain: AsyncOperator<Out>,
 {
     type Item = StreamElement<()>;

@@ -1,4 +1,5 @@
 use criterion::black_box;
+use noir::environment::max_cpu_parallelism;
 use std::marker::PhantomData;
 use std::time::{Instant, Duration};
 

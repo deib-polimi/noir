@@ -10,7 +10,7 @@ edition = "2021"
 
 [features]
 default = ["flume"]
-crossbeam = ["crossbeam-channel"]
+flume = ["dep:flume"]
 profiler = []
 
 [dependencies]
@@ -52,7 +52,6 @@ shell-escape = "0.1"
 structopt = "0.3"
 
 # channel implementation
-crossbeam-channel = { version = "0.5", optional = true }
 flume = { version = "0.10", optional = true }
 
 # Used for KeyedWindowManager
@@ -87,8 +86,6 @@ rayon = "1.5"
 thiserror = "1.0"
 
 pin-project = "1.0"
-
-nanorand = "0.7"
 
 indexmap = "1.8"
 

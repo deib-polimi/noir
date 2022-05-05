@@ -361,7 +361,7 @@ where
         next_strategy: NextStrategy<Out, IndexFn>,
     ) -> Stream<Out, impl AsyncOperator<Out>>
     where
-        IndexFn: KeyerFn<usize, Out>,
+        IndexFn: KeyerFn<u64, Out>,
         Out: ExchangeData,
         Op: AsyncOperator<()> + 'static,
         GetEndOp: FnOnce(OperatorChain, NextStrategy<Out, IndexFn>, BatchMode) -> Op,
