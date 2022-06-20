@@ -50,8 +50,7 @@ impl<In: ExchangeData> TypeMapKey for MultiplexingSenderKey<In> {
 }
 
 /// Metadata about a registered sender.
-#[derive(Default, Derivative)]
-#[derivative(Debug)]
+#[derive(Default, Debug)]
 struct SenderMetadata {
     /// This sender should connect to the remote recipient.
     to_remote: bool,
@@ -306,10 +305,7 @@ impl NetworkTopology {
             if !prev.is_empty() {
                 let address = self.demultiplexer_addresses[&demux_coord].clone();
                 let (demux, join_handle) = DemuxHandle::new(demux_coord, address, prev.len());
-                #[cfg(not(feature = "async-tokio"))]
                 self.join_handles.push(join_handle);
-                #[cfg(feature = "async-tokio")]
-                self.async_join_handles.push(join_handle);
                 demuxes.insert(demux_coord, demux);
             } else {
                 debug!("Demultiplexer of {} is useless since it has no previous remote block, ignoring", demux_coord);
@@ -494,9 +490,9 @@ impl NetworkTopology {
     /// and `get_receiver`.
     ///
     /// Internally this computes the mapping between `DemuxCoord` and actual TCP port.
-    #[tracing::instrument(name = "finalize_topology", skip_all)]
+    #[tracing::instrument(name = "build_topology", skip_all)]
     pub fn build(&mut self) {
-        tracing::debug!("finalizing topology");
+        tracing::debug!("building topology");
         // Close handles to multiplexers to start the worker threads
 
         let config = if let ExecutionRuntime::Remote(config) = &self.config.runtime {
@@ -527,6 +523,7 @@ impl NetworkTopology {
 
     /// Finalize the topology and start mutliplexers and demultiplexers
     pub fn finalize(&mut self) {
+        debug!("Finalizing topology");
         // drop all the senders/receivers making sure no dangling sender keep alive their network
         // receivers.
         self.receivers.take();

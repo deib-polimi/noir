@@ -13,7 +13,7 @@ default = ["flume"]
 crossbeam = ["crossbeam-channel"]
 fair = []
 profiler = []
-async-tokio = ["tokio/net", "tokio/io-util", "tokio/time", "tokio/rt-multi-thread", "tokio/macros"]
+async-tokio = ["tokio/net", "tokio/io-util", "tokio/time", "tokio/rt-multi-thread", "tokio/macros", "tokio-uring"]
 deque-flatten = []
 
 [dependencies]
@@ -77,6 +77,7 @@ chrono = "0.4"
 coarsetime = "0.1"
 
 tokio = { version = "1", features = ["rt"], default-features = false }
+tokio-uring = { version = "0.3", optional = true }
 futures = "0.3"
 
 parking_lot = "0.12"

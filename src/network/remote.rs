@@ -7,8 +7,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[cfg(not(feature = "async-tokio"))]
 use std::net::TcpStream;
-#[cfg(feature = "async-tokio")]
-use tokio::net::TcpStream;
 
 use anyhow::Result;
 use bincode::config::{FixintEncoding, RejectTrailing, WithOtherIntEncoding, WithOtherTrailing};
@@ -105,7 +103,7 @@ pub(crate) fn remote_send<T: ExchangeData>(
 pub(crate) async fn remote_send<T: ExchangeData>(
     what: NetworkMessage<T>,
     dest: ReceiverEndpoint,
-    stream: &mut TcpStream,
+    stream: &mut tokio::net::TcpStream,
 ) {
     let address = stream
         .peer_addr()
@@ -193,40 +191,65 @@ pub(crate) fn remote_recv(
 }
 
 #[cfg(feature = "async-tokio")]
+async fn read_exact(stream: &tokio_uring::net::TcpStream, len: usize) -> Result<Vec<u8>, tokio::io::Error> {
+    use tokio_uring::buf::IoBuf;
+
+    let mut buf = vec![0u8; len];
+    let mut rem = len;
+    
+    loop {
+        let slice = buf.slice(len - rem..);
+        let (res, slice) = stream.read(slice).await;
+
+        match res {
+            Ok(n) if n == rem => return Ok(slice.into_inner()),
+            Ok(n) if n == 0 => return Err(tokio::io::Error::new(tokio::io::ErrorKind::UnexpectedEof, "End of stream!")),
+            Ok(n) => {
+                buf = slice.into_inner();
+                rem -= n;
+            }
+            Err(e) => { return Err(e) }
+        }
+    }
+}
+
+#[cfg(feature = "async-tokio")]
 pub(crate) async fn remote_recv(
     coord: DemuxCoord,
-    stream: &mut TcpStream,
+    stream: &tokio_uring::net::TcpStream,
 ) -> Option<(ReceiverEndpoint, SerializedMessage)> {
-    let address = stream
-        .peer_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-    let header_size = header_size();
-    let mut header = vec![0u8; header_size];
-    match stream.read_exact(&mut header).await {
-        Ok(_) => {}
+
+    // let address = stream
+    //     .peer_addr()
+    //     .map(|a| a.to_string())
+    //     .unwrap_or_else(|_| "unknown".to_string());
+
+    let header = match read_exact(stream, header_size()).await {
+        Ok(buf) => buf,
         Err(e) => {
             debug!(
-                "Failed to receive {} bytes of header to {} from {}: {:?}",
-                header_size, coord, address, e
+                "Failed to receive header_bytes to {}: {:?}", coord, e
             );
             return None;
         }
-    }
+    };
+                
     let header: MessageHeader = HEADER_CONFIG
         .deserialize(&header)
         .expect("Malformed header");
-    let mut buf = vec![0u8; header.size as usize];
-    stream.read_exact(&mut buf).await.unwrap_or_else(|e| {
+
+    let buf = read_exact(stream, header.size as usize).await.unwrap_or_else(|e| {
         panic!(
-            "Failed to receive {} bytes to {} from {}: {:?}",
-            header.size, coord, address, e
+            "Failed to receive {} bytes to {}: {:?}",
+            header.size, coord, e
         )
     });
+
     let receiver_endpoint = ReceiverEndpoint::new(
         Coord::new(coord.coord.block_id, coord.coord.host_id, header.replica_id),
         header.sender_block_id,
     );
+
     Some((receiver_endpoint, buf))
 }
 

@@ -301,7 +301,7 @@ impl<Out: ExchangeData> MultiplexingSender<Out> {
     ///
     /// All the replicas of this block should point to this multiplexer (or one of its clones).
     pub fn new(coord: DemuxCoord, address: (String, u16)) -> (Self, JoinHandle<()>) {
-        let (tx, rx) = channel::bounded(CHANNEL_CAPACITY);
+        let (tx, rx) = channel::bounded(MUX_CHANNEL_CAPACITY);
         let join_handle = tokio::spawn(async move {
             tracing::debug!(
                 "mux connecting to {}",

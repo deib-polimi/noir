@@ -189,6 +189,7 @@ impl Scheduler {
             block_structures.push((coord, structure.clone()));
             job_graph_generator.add_block(coord.block_id, structure);
         }
+        debug!("Operators started");
 
         let job_graph = job_graph_generator.finalize();
         debug!("Job graph in dot format:\n{}", job_graph);

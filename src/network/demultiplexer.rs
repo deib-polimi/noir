@@ -1,14 +1,14 @@
 #[cfg(not(feature = "async-tokio"))]
 use std::net::{Shutdown, TcpListener, TcpStream};
-#[cfg(not(feature = "async-tokio"))]
 use std::thread::JoinHandle;
+
+use std::net::SocketAddr;
+
 
 #[cfg(feature = "async-tokio")]
 use tokio::io::AsyncWriteExt;
 #[cfg(feature = "async-tokio")]
-use tokio::net::{TcpListener, TcpStream};
-#[cfg(feature = "async-tokio")]
-use tokio::task::JoinHandle;
+use tokio_uring::net::{TcpListener, TcpStream};
 
 use ahash::AHashMap;
 use anyhow::anyhow;
@@ -60,7 +60,7 @@ impl<In: ExchangeData> DemuxHandle<In> {
         receiver_endpoint: ReceiverEndpoint,
         sender: Sender<NetworkMessage<In>>,
     ) {
-        debug!(
+        tracing::debug!(
             "registering {} to the demultiplexer of {}",
             receiver_endpoint, self.coord
         );
@@ -142,7 +142,7 @@ fn bind_remotes<In: ExchangeData>(
         join_handles.push(join_handle);
         tx_broadcast.push(demux_tx);
     }
-    debug!("All connection to {} started, waiting for senders", coord);
+    tracing::debug!("All connection to {} started, waiting for senders", coord);
 
     // Broadcast senders
     while let Ok(t) = rx_senders.recv() {
@@ -154,7 +154,7 @@ fn bind_remotes<In: ExchangeData>(
     for handle in join_handles {
         handle.join().unwrap();
     }
-    debug!("all demuxes for {} finished", coord);
+    tracing::debug!("all demuxes for {} finished", coord);
 }
 
 /// Handle the connection with a remote sender.
@@ -183,7 +183,7 @@ fn demux_thread<In: ExchangeData>(
         .peer_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
-    debug!("demultiplexer for {} at {} started", coord, address);
+    tracing::debug!("demultiplexer for {} at {} started", coord, address);
 
     while let Some((dest, message)) = remote_recv(coord, &mut stream) {
         let message_len = message.len();
@@ -196,7 +196,7 @@ fn demux_thread<In: ExchangeData>(
     }
 
     let _ = stream.shutdown(Shutdown::Both);
-    debug!("demultiplexer for {} at {} exited", coord, address);
+    tracing::debug!("demultiplexer for {} at {} exited", coord, address);
 }
 
 #[cfg(feature = "async-tokio")]
@@ -214,7 +214,7 @@ impl<In: ExchangeData> DemuxHandle<In> {
     ) -> (Self, JoinHandle<()>) {
         let (tx_senders, rx_senders) = channel::unbounded();
 
-        let join_handle = tokio::spawn(bind_remotes(coord, address, num_clients, rx_senders));
+        let join_handle = std::thread::spawn(move || bind_remotes(coord, address, num_clients, rx_senders));
         (Self { coord, tx_senders }, join_handle)
     }
 
@@ -224,7 +224,7 @@ impl<In: ExchangeData> DemuxHandle<In> {
         receiver_endpoint: ReceiverEndpoint,
         sender: Sender<NetworkMessage<In>>,
     ) {
-        debug!(
+        tracing::debug!(
             "registering {} to the demultiplexer of {}",
             receiver_endpoint, self.coord
         );
@@ -236,7 +236,7 @@ impl<In: ExchangeData> DemuxHandle<In> {
 
 /// Bind the socket of this demultiplexer.
 #[cfg(feature = "async-tokio")]
-async fn bind_remotes<In: ExchangeData>(
+fn bind_remotes<In: ExchangeData>(
     coord: DemuxCoord,
     address: (String, u16),
     num_clients: usize,
@@ -249,72 +249,71 @@ async fn bind_remotes<In: ExchangeData>(
         .unwrap()
         .collect();
 
-    tracing::debug!("demux binding {}", address[0]);
-    let listener = TcpListener::bind(&*address)
-        .await
-        .map_err(|e| {
-            anyhow!(
-                "Failed to bind socket for {} at {:?}: {:?}",
-                coord,
-                address,
-                e
-            )
-        })
-        .unwrap();
-    let address = listener
-        .local_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-    info!(
-        "Remote receiver at {} is ready to accept {} connections to {}",
-        coord, num_clients, address
-    );
+    tokio_uring::start(async move {
+        tracing::debug!("demux binding {}", address[0]);
+        let listener = TcpListener::bind(address[0])
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to bind socket for {} at {:?}: {:?}",
+                    coord,
+                    address,
+                    e
+                )
+            })
+            .unwrap();
+        
+        // the list of JoinHandle of all the spawned threads, including the demultiplexer one
+        let mut join_handles = vec![];
+        let mut tx_broadcast = vec![];
 
-    // the list of JoinHandle of all the spawned threads, including the demultiplexer one
-    let mut join_handles = vec![];
-    let mut tx_broadcast = vec![];
+        let mut connected_clients = 0;
+        while connected_clients < num_clients {
+            let stream = listener.accept().await;
+            let (stream, peer_addr) = match stream {
+                Ok(stream) => stream,
+                Err(e) => {
+                    tracing::warn!("Failed to accept incoming connection at {}: {:?}", coord, e);
+                    continue;
+                }
+            };
+            connected_clients += 1;
+            tracing::info!(
+                "Remote receiver at {} accepted a new connection from {} ({} / {})",
+                coord, peer_addr, connected_clients, num_clients
+            );
 
-    let mut connected_clients = 0;
-    while connected_clients < num_clients {
-        let stream = listener.accept().await;
-        let (stream, peer_addr) = match stream {
-            Ok(stream) => stream,
-            Err(e) => {
-                warn!("Failed to accept incoming connection at {}: {:?}", coord, e);
-                continue;
-            }
-        };
-        connected_clients += 1;
-        info!(
-            "Remote receiver at {} accepted a new connection from {} ({} / {})",
-            coord, peer_addr, connected_clients, num_clients
-        );
-
-        let (demux_tx, demux_rx) = flume::unbounded();
-        let join_handle = tokio::spawn(async move {
-            let mut senders = AHashMap::new();
-            while let Ok((endpoint, sender)) = demux_rx.recv_async().await {
-                senders.insert(endpoint, sender);
-            }
-            tracing::debug!("demux got senders");
-            demux_thread::<In>(coord, senders, stream).await;
-        });
-        join_handles.push(join_handle);
-        tx_broadcast.push(demux_tx);
-    }
-    debug!("All connection to {} started, waiting for senders", coord);
-
-    // Broadcast senders
-    while let Ok(t) = rx_senders.recv() {
-        for tx in tx_broadcast.iter() {
-            tx.send(t.clone()).unwrap();
+            let (demux_tx, demux_rx) = flume::unbounded();
+            let join_handle = tokio_uring::spawn(async move {
+                let mut senders = AHashMap::new();
+                while let Ok((endpoint, sender)) = demux_rx.recv_async().await {
+                    senders.insert(endpoint, sender);
+                }
+                tracing::debug!("async demux got senders");
+                demux_thread::<In>(coord, senders, peer_addr, stream).await;
+            });
+            join_handles.push(join_handle);
+            tx_broadcast.push(demux_tx);
+            tracing::debug!(
+                "Spawned task at {} for {} ({} / {})",
+                coord, peer_addr, connected_clients, num_clients
+            );
         }
-    }
-    drop(tx_broadcast); // Start all demuxes
-    for handle in join_handles {
-        handle.await.unwrap();
-    }
-    debug!("all demuxes for {} finished", coord);
+        tracing::debug!("All connection to {} started, waiting for senders", coord);
+
+        // Broadcast senders
+        while let Ok(t) = rx_senders.recv_async().await {
+            for tx in tx_broadcast.iter() {
+                tx.send(t.clone()).unwrap();
+            }
+        }
+        drop(tx_broadcast); // Start all demuxes
+        tracing::debug!("Broadcast for {} finished, waiting for termination", coord);
+        for handle in join_handles {
+            handle.await.unwrap();
+        }
+        tracing::debug!("all demuxes for {} finished", coord);
+    });
+    tracing::debug!("Stopped runtime for: {} demux", coord);
 }
 
 /// Handle the connection with a remote sender.
@@ -337,24 +336,27 @@ async fn bind_remotes<In: ExchangeData>(
 async fn demux_thread<In: ExchangeData>(
     coord: DemuxCoord,
     senders: AHashMap<ReceiverEndpoint, Sender<NetworkMessage<In>>>,
-    mut stream: TcpStream,
+    address: SocketAddr,
+    stream: TcpStream,
 ) {
-    let address = stream
-        .peer_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-    debug!("demultiplexer for {} at {} started", coord, address);
 
-    while let Some((dest, message)) = remote_recv(coord, &mut stream).await {
+
+    // let address = stream
+    //     .peer_addr()
+    //     .map(|a| a.to_string())
+    //     .unwrap_or_else(|_| "unknown".to_string());
+    tracing::debug!("demultiplexer for {} at {} started", coord, address);
+
+    while let Some((dest, message)) = remote_recv(coord, &stream).await {
         let message_len = message.len();
         let message = deserialize::<NetworkMessage<In>>(message).unwrap();
         get_profiler().net_bytes_in(message.sender, dest.coord, header_size() + message_len);
 
-        if let Err(e) = senders[&dest].send(message) {
+        if let Err(e) = senders[&dest].send_async(message).await {
             warn!("failed to send message to {}: {:?}", dest, e);
         }
     }
 
-    stream.shutdown().await.unwrap();
-    debug!("demultiplexer for {} at {} exited", coord, address);
+    // stream.close().await.unwrap(); // TODO: close!
+    tracing::debug!("demultiplexer for {} at {} finished", coord, address);
 }
