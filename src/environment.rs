@@ -131,6 +131,19 @@ impl StreamEnvironment {
         info!("finished execution");
     }
 
+    /// Start the computation. Blocks until the computation is complete.
+    ///
+    /// This version of execute is interactive, meaning that it will not consume
+    /// the environment. This allows for multiple executions of the same environment.
+    pub fn execute_blocking_interactive(&self) {
+        let mut env = self.inner.lock();
+        info!("starting execution ({} blocks)", env.block_count);
+        let scheduler = env.scheduler.take().unwrap();
+        scheduler.start_blocking(env.block_count);
+        env.reset();
+        info!("finished execution");
+    }
+
     /// Get the total number of processing cores in the cluster.
     pub fn parallelism(&self) -> CoordUInt {
         match &self.inner.lock().config.runtime {
@@ -165,6 +178,14 @@ impl StreamEnvironmentInner {
             block_count: 0,
             scheduler: Some(Scheduler::new(config)),
         }
+    }
+
+    /// Reset the environment to its initial state by dropping the scheduler and creating a new
+    /// one and resetting the block count
+    /// This is used to allow multiple executions of the same environment.
+    fn reset(&mut self) {
+        self.block_count = 0;
+        self.scheduler = Some(Scheduler::new(self.config.clone()));
     }
 
     pub fn stream<S>(env_rc: Arc<Mutex<StreamEnvironmentInner>>, source: S) -> Stream<S>

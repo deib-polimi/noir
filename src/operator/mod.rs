@@ -25,6 +25,7 @@ use crate::scheduler::ExecutionMetadata;
 use crate::stream::KeyedItem;
 use crate::{BatchMode, KeyedStream, Stream};
 
+use self::cache::{CacheSink, StreamCache, StreamCacheRef};
 #[cfg(feature = "async-tokio")]
 use self::map_async::MapAsync;
 use self::map_memo::MapMemo;
@@ -61,6 +62,7 @@ use self::{
 #[cfg(feature = "timestamp")]
 mod add_timestamps;
 mod batch_mode;
+pub mod cache;
 pub(crate) mod end;
 mod filter;
 mod filter_map;
@@ -1868,6 +1870,75 @@ where
             .add_operator(|prev| Collect::new(prev, output.clone()))
             .finalize_block();
         StreamOutput::from(output)
+    }
+
+    /// Closes the stream, preserving all resulting items in a [`StreamCache`]. This enables the
+    /// stream to be resumed from the last processed element.
+    ///
+    /// **Note**: To resume the stream later, ensure that the stream is executed using
+    /// [`StreamEnvironment::interactive_execute_blocking`]. Failing to do so will consume the environment.
+    ///
+    /// **Note**: Calling [`StreamCache::read`] on the returned cache before the execution of the stream
+    /// will result in a panic.
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// let mut env = StreamEnvironment::default();
+    /// let source = IteratorSource::new((0..10));
+    ///
+    /// // Create a cached stream by applying filters and caching the results
+    /// let cache = env.stream(source).filter(|x| x % 3 == 0).cache();
+    ///
+    /// // Execute the stream interactively to capture and store the results in the cache
+    /// env.interactive_execute_blocking();
+    ///
+    /// // Further process the cached stream, applying additional filters and collecting the results
+    /// cache.stream().filter(|x| x % 2 == 0).collect_vec();
+    ///
+    /// // Execute the environment to finalize the processing
+    /// env.execute_blocking();
+    ///
+    /// // Assert the final result matches the expected values
+    /// assert_eq!(res.get().unwrap(), (0..10).filter(|x| x % 3 == 0 && x % 2 == 0).collect());
+    /// ```
+    pub fn cache(self) -> StreamCache<I> {
+        let output = StreamCacheRef::default();
+        let env = self.env.clone();
+        self.add_operator(|prev| CacheSink::new(prev, output.clone()))
+            .finalize_block();
+        StreamCache::new(output, env)
+    }
+
+    /// Create a checkpoint in a stream by caching all the elements in a [`StreamCache`].
+    /// The function returns a tuple containing the cache and the stream on which operations
+    /// following the checkpoint can be applied.
+    ///
+    /// **Note**: This operator will split the current block.
+    ///
+    /// ## Example
+    /// ```
+    /// let mut env = StreamEnvironment::default();
+    /// let source = IteratorSource::new((0..10));
+    ///
+    /// // Create a cached stream by applying filters and caching the results
+    /// let (cache, stream) = env.stream(source).filter(|x| x % 3 == 0).checkpoint();
+    ///
+    /// // Further process the cached stream, applying additional filters and collecting the results
+    /// let result = stream.filter(|x| x % 2 == 0).collect_vec();
+    ///
+    /// // Execute the environment to finalize the processing
+    /// env.execute_blocking();
+    ///
+    /// // Assert the final result matches the expected values
+    /// assert_eq!(result.get().unwrap(), (0..10).filter(|x| x % 3 == 0 && x % 2 == 0).collect());
+    ///
+    /// // Assert the cache contains the expected values
+    /// assert_eq!(cache.read(), (0..10).filter(|x| x % 3 == 0).collect());
+    /// ```
+    pub fn checkpoint(self) -> (StreamCache<I>, Stream<impl Operator<Out = Op::Out>>) {
+        let mut splits = self.split(2);
+        (splits.pop().unwrap().cache(), splits.pop().unwrap())
     }
 }
 
